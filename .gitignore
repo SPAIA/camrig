@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Secrets — these live only in /etc/camrig on the device, never in the repo
+rclone.conf
+device_token
+*.pem
+*.key
+
+# Recordings / capture artefacts (in case anyone points storage at the repo)
+recordings/
+*.mkv
+*.raw
+*.pts
+
+# Editor / OS / tooling
+.vscode/
+.claude/
+.DS_Store

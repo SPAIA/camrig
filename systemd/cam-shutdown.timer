@@ -1,0 +1,11 @@
+[Unit]
+Description=Trigger camrig nightly shutdown at 22:00 local time
+
+[Timer]
+# 22:00 every day. Keep this in sync with schedule.stop_hour in config.toml.
+OnCalendar=*-*-* 22:00:00
+# If the Pi was off at 22:00 for any reason, don't fire a late shutdown on boot.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

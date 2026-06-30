@@ -1,0 +1,69 @@
+# camrig configuration. Deployed to /etc/camrig/config.toml by setup/install.sh.
+# All values shown are the built-in defaults (see camrig/config.py); override here.
+
+[capture]
+# Capture profile: "mjpeg" (default daily pipeline, intra-only, clean frames),
+# "ffv1" (lossless intra, large), or "raw" (rpicam-raw mono Bayer, huge).
+profile = "mjpeg"
+
+# Mono IMX296 full sensor resolution.
+width = 1456
+height = 1088
+
+# Highest feasible frame rate for the IMX296 at full res is ~60 fps.
+framerate = 60
+
+# MJPEG quality (1-100). Higher = less compression, larger files, cleaner targets.
+quality = 95
+
+# Manual exposure for a repeatable test rig. Short shutter freezes insect motion
+# but needs adequate light. 0 = let the camera auto-expose (capped by framerate).
+shutter_us = 2000
+
+# Analogue gain. 0 = auto. Increase if shutter_us is too short for the lighting.
+gain = 0.0
+
+# ISP denoise mode. "cdn_off" disables temporal/3D denoise, which otherwise
+# smears or erases insect-sized moving targets. Other values: auto, cdn_fast, cdn_hq.
+denoise = "cdn_off"
+
+# Scheduled clip length in seconds (5 minutes).
+clip_seconds = 300
+
+# Safety ceiling for human-triggered sessions; the supervisor force-stops after this.
+max_session_seconds = 600
+
+[schedule]
+# Active recording window (local time). Outside it the Pi shuts down.
+start_hour = 5
+stop_hour = 22
+# Scheduled clip cadence in minutes (on :00 and :30 within the window).
+interval_min = 30
+
+[storage]
+# Preferred fast storage. Used if this path is a mountpoint and writable.
+nvme_mount = "/mnt/nvme"
+# Fallback when the NVMe mount is absent/not writable.
+sd_fallback_dir = "/home/spaia/recordings"
+# Keep uploaded clips locally for this many days before they may be pruned.
+keep_days = 2
+# Start pruning oldest *uploaded* clips when free space drops below this (GiB).
+min_free_gb = 10
+
+[upload]
+enabled = true
+# rclone remote name configured in /etc/camrig/rclone.conf (see rclone.conf.example).
+rclone_remote = "r2"
+bucket = "spaia-cam"
+
+[power]
+# Hour to wake the next morning (matches schedule.start_hour).
+wake_hour = 5
+
+[cloud]
+# Outbound WebSocket URL of the Cloudflare Worker device endpoint.
+worker_ws_url = "wss://your-worker.example.workers.dev/device"
+# Stable identifier for this rig; the Worker keys its Durable Object on it.
+device_id = "pi-rig-01"
+# File holding the device bearer token (kept out of config; 0600, root-only).
+device_token_file = "/etc/camrig/device_token"

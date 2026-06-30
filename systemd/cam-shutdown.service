@@ -1,0 +1,11 @@
+[Unit]
+Description=camrig nightly shutdown (final R2 upload + RTC wake alarm + power off)
+# Don't begin sleeping while a capture is still wrapping up.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Root: writes /sys/class/rtc/rtc0/wakealarm and powers the board off.
+User=root
+ExecStart=/opt/camrig/venv/bin/camrig shutdown

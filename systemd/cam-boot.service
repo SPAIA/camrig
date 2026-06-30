@@ -1,0 +1,15 @@
+[Unit]
+Description=camrig boot tasks (NTP sync + catch-up upload to R2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Root: needs timedatectl set-ntp and to restart systemd-timesyncd.
+User=root
+ExecStart=/opt/camrig/venv/bin/camrig boot
+# Don't fail the boot if the network never comes up; the supervisor still records.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

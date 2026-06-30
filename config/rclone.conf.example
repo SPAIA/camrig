@@ -1,0 +1,16 @@
+# Cloudflare R2 remote for rclone. Copy to /etc/camrig/rclone.conf (chmod 0600)
+# and fill in the real values, OR run `rclone config` and point camrig at it.
+#
+# Create an R2 API token in the Cloudflare dashboard (R2 > Manage R2 API Tokens).
+# The "remote" name here ([r2]) must match upload.rclone_remote in config.toml.
+
+[r2]
+type = s3
+provider = Cloudflare
+# Account-scoped S3 endpoint: https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+access_key_id = YOUR_R2_ACCESS_KEY_ID
+secret_access_key = YOUR_R2_SECRET_ACCESS_KEY
+endpoint = https://YOUR_ACCOUNT_ID.r2.cloudflarestorage.com
+region = auto
+# R2 ignores ACLs; this avoids spurious warnings.
+no_check_bucket = true

@@ -1,0 +1,19 @@
+[Unit]
+Description=camrig capture supervisor (camera owner, scheduler, Cloudflare link)
+After=network.target time-sync.target
+Wants=network.target
+
+[Service]
+Type=exec
+# Runs as the camera user (must be in the 'video' group; see install.sh).
+User=spaia
+Group=video
+SupplementaryGroups=render
+ExecStart=/opt/camrig/venv/bin/camrig supervise
+Restart=on-failure
+RestartSec=5
+# Capture is the rig's whole job; let it use the CPU it needs.
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target
