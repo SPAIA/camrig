@@ -94,10 +94,35 @@ Admin/SSH access to the Pi itself is via **Tailscale** (unchanged); only the pub
 /opt/camrig/venv/bin/camrig status                 # resolved config + storage
 /opt/camrig/venv/bin/camrig record --dry-run       # print the exact capture command
 /opt/camrig/venv/bin/camrig record --seconds 10    # capture a 10s test clip
+/opt/camrig/venv/bin/camrig focus                  # live focus-assist page (see below)
 /opt/camrig/venv/bin/camrig supervise --no-cloud   # run scheduler without Cloudflare
 /opt/camrig/venv/bin/camrig boot                   # NTP sync + catch-up upload
 /opt/camrig/venv/bin/camrig shutdown --skip-poweroff   # upload+arm wake, but stay up
 ```
+
+## Focusing the lens (headless, over Tailscale)
+
+The IMX296 uses a **manual-focus** C/CS-mount lens — you set focus by turning the
+lens ring. Since the Pi is headless and reached over Tailscale, `camrig focus`
+serves a browser page with a live view and a **sharpness score**:
+
+```bash
+/opt/camrig/venv/bin/camrig focus                  # full sensor, :8080, auto-exposure
+/opt/camrig/venv/bin/camrig focus --framerate 8    # lower fps if the link is slow
+/opt/camrig/venv/bin/camrig focus --shutter 2000 --gain 4   # match capture exposure
+```
+
+It prints the tailnet URLs to open (e.g. `http://pi-rig-01.<tailnet>.ts.net:8080/`).
+On the page, **turn the lens ring until the focus score peaks** — the bar is
+relative to the best value seen since the last reset. A centre ROI box marks the
+region measured (adjust its size with the slider). Toggle **audio** for a tone
+whose pitch rises as focus improves, so you can watch the lens instead of the
+screen. The score is a variance-of-Laplacian sharpness metric computed in the
+browser; denoise is forced off while focusing so softness can't be hidden.
+
+Stop with Ctrl-C. Nothing is recorded — it only streams while the page is open.
+The camera can't be recording (scheduled capture) at the same time, so run this
+during setup or pause `cam-supervisor` first.
 
 ## Verify on the Pi
 

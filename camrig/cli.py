@@ -3,6 +3,7 @@
 Subcommands:
   supervise   Run the long-lived capture supervisor + Cloudflare link (service).
   record      Record a single clip now (testing / manual; supports --dry-run).
+  focus       Serve a live focus-assist page (manual lens; reach it over Tailscale).
   boot        Boot tasks: NTP sync + catch-up upload + prune.
   shutdown    Upload today, set RTC wake alarm, power off.
   status      Print resolved config + selected storage and exit.
@@ -55,6 +56,22 @@ def _cmd_record(args, cfg) -> int:
     return 0
 
 
+def _cmd_focus(args, cfg) -> int:
+    from .focus import FocusConfig, run
+
+    focus_cfg = FocusConfig.from_capture(
+        cfg.capture,
+        width=args.width,
+        height=args.height,
+        framerate=args.framerate,
+        quality=args.quality,
+        port=args.port,
+        shutter_us=args.shutter,
+        gain=args.gain,
+    )
+    return run(focus_cfg, dry_run=args.dry_run)
+
+
 def _cmd_boot(args, cfg) -> int:
     from . import boot
     return boot.run(cfg, dry_run=args.dry_run)
@@ -94,6 +111,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--triggered", action="store_true", help="tag as a manual session")
     p.add_argument("--dry-run", action="store_true", help="print the command, do not run")
     p.set_defaults(func=_cmd_record)
+
+    p = sub.add_parser("focus", help="serve a live focus-assist page")
+    p.add_argument("--port", type=int, default=8080, help="HTTP port (default 8080)")
+    p.add_argument("--width", type=int, help="stream width (default: full sensor)")
+    p.add_argument("--height", type=int, help="stream height (default: full sensor)")
+    p.add_argument("--framerate", type=int, default=15,
+                   help="stream fps; lower it if the link is slow (default 15)")
+    p.add_argument("--quality", type=int, default=80, help="MJPEG quality (default 80)")
+    p.add_argument("--shutter", type=int, dest="shutter",
+                   help="manual shutter (us); default auto-expose")
+    p.add_argument("--gain", type=float, help="analogue gain; default auto")
+    p.add_argument("--dry-run", action="store_true", help="print the command, do not run")
+    p.set_defaults(func=_cmd_focus)
 
     p = sub.add_parser("boot", help="boot tasks: ntp sync + catch-up upload")
     p.add_argument("--dry-run", action="store_true")
