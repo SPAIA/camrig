@@ -48,7 +48,7 @@ sd_fallback_dir = "/home/spaia/recordings"
 # Keep uploaded clips locally for this many days before they may be pruned.
 keep_days = 2
 # Start pruning oldest *uploaded* clips when free space drops below this (GiB).
-min_free_gb = 10
+min_free_gb = 5
 
 [upload]
 enabled = true
