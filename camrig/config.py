@@ -32,6 +32,17 @@ class CaptureConfig:
 
 
 @dataclass
+class PostprocessConfig:
+    enabled: bool = True
+    preview_width: int = 728
+    preview_fps: int = 30
+    preview_crf: int = 28
+    motion_width: int = 728
+    motion_threshold: int = 12
+    nice: int = 10
+
+
+@dataclass
 class ScheduleConfig:
     start_hour: int = 5
     stop_hour: int = 22
@@ -68,6 +79,7 @@ class CloudConfig:
 @dataclass
 class Config:
     capture: CaptureConfig = field(default_factory=CaptureConfig)
+    postprocess: PostprocessConfig = field(default_factory=PostprocessConfig)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     upload: UploadConfig = field(default_factory=UploadConfig)

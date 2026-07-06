@@ -3,10 +3,10 @@
 
 [capture]
 # Capture profile: "mjpeg" (default daily pipeline, intra-only, clean frames),
-# "ffv1" (lossless intra, large), or "raw" (rpicam-raw mono Bayer, huge).
+# "ffv1" (lossless intra, large), or "raw" (rpicam-raw Bayer mosaic, huge).
 profile = "mjpeg"
 
-# Mono IMX296 full sensor resolution.
+# IMX296 full sensor resolution.
 width = 1456
 height = 1088
 
@@ -28,10 +28,30 @@ gain = 0.0
 denoise = "cdn_off"
 
 # Scheduled clip length in seconds (5 minutes).
-clip_seconds = 300
+clip_seconds = 180
 
 # Safety ceiling for human-triggered sessions; the supervisor force-stops after this.
 max_session_seconds = 600
+
+[postprocess]
+# After each capture, generate per-clip sidecars on the Pi (in the idle gap
+# between clips): a low-res H.264 preview and per-frame motion metrics. One
+# niced ffmpeg decodes the clip once and feeds both.
+enabled = true
+# Preview width (px); height follows the aspect ratio. 728 = half sensor width.
+preview_width = 728
+# Preview frame rate. 0 keeps the source rate; 30 halves the encode work.
+preview_fps = 30
+# x264 CRF quality (lower = better/larger). The preview is for scrubbing only —
+# analysis always reads the original intra-only clip.
+preview_crf = 28
+# Motion-analysis frame width (px, grayscale); height follows the aspect ratio.
+# Always runs at the source frame rate so metric index i aligns with .pts line i.
+motion_width = 728
+# Per-pixel difference (0-255) above which a pixel counts as "active" motion.
+motion_threshold = 12
+# Unix niceness for postprocess jobs, so an in-progress capture always wins the CPU.
+nice = 10
 
 [schedule]
 # Active recording window (local time). Outside it the Pi shuts down.

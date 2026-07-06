@@ -1,7 +1,7 @@
 # camrig — insect-tracking capture rig
 
 Scheduled + remotely-triggered video capture on a **Raspberry Pi 5** with the
-**Global Shutter mono camera (IMX296)**, built as a test rig for offline
+**Global Shutter camera (colour IMX296)**, built as a test rig for offline
 **motion-trail tracking of tiny objects (insects)**.
 
 What it does:
@@ -12,12 +12,17 @@ What it does:
   inbound ports.
 - **Shuts down at 22:00** and **wakes at 05:00** using the Pi 5 RTC alarm.
 - **Syncs the clock via NTP** at boot (when online).
-- **Uploads each day's clips to Cloudflare R2** via rclone.
+- **Post-processes each clip on-device** in the idle gap between captures: a
+  low-res **H.264 preview** for scrubbing plus a **per-frame motion-metrics
+  sidecar** (placeholder analysis, the seed of the motion-trail tracker).
+- **Uploads each day's clips to Cloudflare R2** via rclone (sidecars included).
 
 ## Why these choices (tracking fidelity)
 
 - **Global shutter** — no rolling-shutter skew on fast insects.
-- **Mono sensor** — no Bayer interpolation, more light-sensitive, sharper small targets.
+- **Colour sensor** — colour is kept at capture (potentially useful for insect ID);
+  convert to grayscale downstream if the tracking pipeline wants it. Note the Bayer
+  filter costs some light sensitivity and sharpness vs the mono variant.
 - **Intra-only capture** — every frame independent. Inter-frame codecs (H.264) run
   motion compensation that creates artefacts exactly on tiny moving objects, so we
   avoid them. (This is also why a **Pi 5 is better than a Pi 4** here, despite the
@@ -34,7 +39,7 @@ What it does:
 |---|---|---|---|
 | `mjpeg` *(default)* | Motion-JPEG in MKV | Daily pipeline | Intra-only, clean frames, manageable upload size. |
 | `ffv1` | Lossless FFV1 in MKV | Fidelity experiments | Software encode likely can't sustain 60 fps at full res. |
-| `raw` | rpicam-raw mono | Short fidelity tests | Huge files; NVMe only. |
+| `raw` | rpicam-raw Bayer | Short fidelity tests | Huge files; NVMe only. Colour mosaic — demosaic offline. |
 
 **Frame rate / lighting:** the IMX296 maxes around **60 fps** at full res
 (1456×1088). To actually reach it the shutter must be ≤ ~16 ms; to *freeze* insect
@@ -71,12 +76,35 @@ NVMe mount is absent or not writable. Layout:
 
 ```
 <base>/recordings/2026-06-30/clip_20260630_101502.mkv
-                              clip_20260630_101502.pts    # per-frame timestamps
-                              clip_20260630_101502.json   # capture metadata
+                              clip_20260630_101502.pts          # per-frame timestamps
+                              clip_20260630_101502.json         # capture metadata
+                              clip_20260630_101502.preview.mp4  # low-res preview
+                              clip_20260630_101502.motion.json  # per-frame motion metrics
 ```
 
 Uploaded to `r2:<bucket>/<hostname>/2026-06-30/…`. Retention prunes **uploaded**
-clips older than `keep_days` once free space drops below `min_free_gb`.
+clips (and their sidecars) older than `keep_days` once free space drops below
+`min_free_gb`.
+
+## Post-capture processing (preview + motion)
+
+After each finished clip the supervisor runs a background job (`[postprocess]`
+in config): **one niced ffmpeg decodes the MJPEG once** and feeds two consumers —
+a downscaled colour H.264 preview written next to the clip, and downscaled
+grayscale frames piped into `python -m camrig.motion`, which writes per-frame
+metrics as JSON. Jobs are serialised and run at `nice 10`, so a capture that
+starts mid-postprocess always wins the CPU; the ~27 idle minutes per half-hour
+slot are far more than the ~2–4 minutes a clip needs. Half-written outputs use a
+`*.part` name that the uploader excludes.
+
+**The motion analysis is a placeholder** (frame differencing: per-frame
+`mean_abs_diff` and `active_fraction`). Iterate toward motion-trail tracking in
+[`camrig/motion.py`](camrig/motion.py) — it reads raw gray8 frames on stdin at
+the source frame rate (metric index *i* aligns with `.pts` line *i*) and writes
+the JSON sidecar; keep that contract and nothing else needs to change. After
+changing it, rebuild sidecars with `camrig postprocess --force`. The preview is
+for humans only — analysis always reads the original intra-only clip, so H.264
+artefacts in the preview don't matter.
 
 ## Remote trigger (Cloudflare)
 
@@ -94,6 +122,8 @@ Admin/SSH access to the Pi itself is via **Tailscale** (unchanged); only the pub
 /opt/camrig/venv/bin/camrig status                 # resolved config + storage
 /opt/camrig/venv/bin/camrig record --dry-run       # print the exact capture command
 /opt/camrig/venv/bin/camrig record --seconds 10    # capture a 10s test clip
+/opt/camrig/venv/bin/camrig postprocess            # preview+motion for pending clips
+/opt/camrig/venv/bin/camrig postprocess --force    # regenerate (e.g. new motion code)
 /opt/camrig/venv/bin/camrig focus                  # live focus-assist page (see below)
 /opt/camrig/venv/bin/camrig supervise --no-cloud   # run scheduler without Cloudflare
 /opt/camrig/venv/bin/camrig boot                   # NTP sync + catch-up upload

@@ -5,11 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "camrig"
 version = "0.1.0"
-description = "Insect-tracking capture rig for Raspberry Pi 5 + Global Shutter mono camera"
+description = "Insect-tracking capture rig for Raspberry Pi 5 + Global Shutter camera"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "websockets>=12.0",
+    "numpy>=1.26",
 ]
 
 [project.scripts]

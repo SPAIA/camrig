@@ -1,4 +1,4 @@
-"""Build and run a single capture for the mono IMX296.
+"""Build and run a single capture for the colour IMX296.
 
 Three intra-only profiles, all preserving small moving targets:
 
@@ -7,8 +7,9 @@ Three intra-only profiles, all preserving small moving targets:
   independent (no inter-frame motion artefacts on tiny insects).
 * ``ffv1``           — lossless intra codec via ffmpeg. Maximum fidelity, large
   files; software encoding likely cannot sustain 60 fps at full res.
-* ``raw``            — rpicam-raw writes the unprocessed mono sensor frames.
-  Huge; intended for short fidelity experiments.
+* ``raw``            — rpicam-raw writes the unprocessed Bayer sensor frames
+  (colour mosaic; demosaic offline). Huge; intended for short fidelity
+  experiments.
 
 Every clip is accompanied by:
 * ``<clip>.pts``  — per-frame presentation timestamps (rpicam --save-pts), so
@@ -170,7 +171,7 @@ def write_metadata(
         "session_id": session_id,
         "started_at_utc": started_at.astimezone(timezone.utc).isoformat(),
         "capture": asdict(cfg),
-        "sensor": "imx296-mono",
+        "sensor": "imx296",
     }
     if extra:
         meta.update(extra)

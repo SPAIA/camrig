@@ -5,7 +5,9 @@ Runs as a long-lived asyncio service (cam-supervisor.service). It:
 * fires a scheduled 5-minute clip on each :00/:30 boundary within the active
   window, and
 * serves on-demand "sessions" requested over the Cloudflare WebSocket
-  (cloudlink), where a remote user triggers recording and a human counts bugs.
+  (cloudlink), where a remote user triggers recording and a human counts bugs, and
+* kicks off a niced background postprocess (preview + motion sidecars) after
+  each finished clip; see camrig.postprocess.
 
 Only one rpicam process may use the camera at a time, so a single asyncio lock
 serialises everything. Priority policy:
@@ -26,7 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from .config import Config
-from . import record, storage
+from . import postprocess, record, storage
 
 log = logging.getLogger("camrig.supervisor")
 
@@ -48,6 +50,9 @@ class Supervisor:
         self.cfg = cfg
         self.base = storage.select_base_dir(cfg)
         self._camera_lock = asyncio.Lock()
+        # Serialises post-capture jobs (preview + motion sidecars); the niced
+        # subprocesses never contend with a capture for the CPU.
+        self._post_lock = asyncio.Lock()
         self._active: SessionState | None = None
         self._recording: record.Recording | None = None
         self._manual_active = False
@@ -128,6 +133,17 @@ class Supervisor:
             "clip": paths.video.name,
             "rc": rc,
         })
+
+        if rc == 0 and self.cfg.postprocess.enabled and paths.video.suffix == ".mkv":
+            asyncio.create_task(self._postprocess(paths.video))
+
+    async def _postprocess(self, video) -> None:
+        """Generate the preview + motion sidecars for a finished clip."""
+        async with self._post_lock:
+            try:
+                await asyncio.to_thread(postprocess.process_clip, self.cfg, video)
+            except Exception:  # never let postprocess break the supervisor
+                log.exception("Postprocess crashed for %s", video.name)
 
     # ----- manual (triggered) sessions ---------------------------------
 

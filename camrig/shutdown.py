@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 
 from .config import Config
-from . import power, storage, upload
+from . import postprocess, power, storage, upload
 
 log = logging.getLogger("camrig.shutdown")
 
@@ -21,8 +21,14 @@ log = logging.getLogger("camrig.shutdown")
 def run(cfg: Config, *, skip_poweroff: bool = False, dry_run: bool = False) -> int:
     log.info("Shutdown tasks starting")
 
+    base = storage.select_base_dir(cfg)
+    # Finish any pending postprocess so previews/motion metrics ship tonight
+    # rather than on the next boot's catch-up. Normally a no-op: clips are
+    # processed right after capture.
+    if cfg.postprocess.enabled:
+        postprocess.process_pending(cfg, base, dry_run=dry_run)
+
     if cfg.upload.enabled:
-        base = storage.select_base_dir(cfg)
         if upload.remote_reachable(cfg):
             upload.upload_today(cfg, base, dry_run=dry_run)
             storage.prune(cfg, base)

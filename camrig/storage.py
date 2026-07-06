@@ -20,7 +20,7 @@ log = logging.getLogger("camrig.storage")
 
 # Sidecar/companion suffixes that belong to a clip and move/prune with it.
 CLIP_SUFFIXES = (".mkv", ".raw")
-SIDECAR_SUFFIXES = (".pts", ".json")
+SIDECAR_SUFFIXES = (".pts", ".json", ".preview.mp4", ".motion.json")
 # Marker written next to a clip once rclone has confirmed it uploaded.
 UPLOADED_MARKER = ".uploaded"
 

@@ -3,6 +3,7 @@
 Subcommands:
   supervise   Run the long-lived capture supervisor + Cloudflare link (service).
   record      Record a single clip now (testing / manual; supports --dry-run).
+  postprocess Generate preview + motion sidecars (one clip, or all pending).
   focus       Serve a live focus-assist page (manual lens; reach it over Tailscale).
   boot        Boot tasks: NTP sync + catch-up upload + prune.
   shutdown    Upload today, set RTC wake alarm, power off.
@@ -54,6 +55,22 @@ def _cmd_record(args, cfg) -> int:
         dry_run=args.dry_run,
     )
     return 0
+
+
+def _cmd_postprocess(args, cfg) -> int:
+    from pathlib import Path
+    from . import postprocess
+
+    if args.clip:
+        ok = postprocess.process_clip(
+            cfg, Path(args.clip), force=args.force, dry_run=args.dry_run
+        )
+    else:
+        base = storage.select_base_dir(cfg)
+        ok = postprocess.process_pending(
+            cfg, base, force=args.force, dry_run=args.dry_run
+        )
+    return 0 if ok else 1
 
 
 def _cmd_focus(args, cfg) -> int:
@@ -111,6 +128,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--triggered", action="store_true", help="tag as a manual session")
     p.add_argument("--dry-run", action="store_true", help="print the command, do not run")
     p.set_defaults(func=_cmd_record)
+
+    p = sub.add_parser("postprocess", help="generate preview + motion sidecars")
+    p.add_argument("clip", nargs="?",
+                   help="one clip (.mkv path); default: every clip missing sidecars")
+    p.add_argument("--force", action="store_true",
+                   help="regenerate even if sidecars exist (after changing camrig/motion.py)")
+    p.add_argument("--dry-run", action="store_true", help="print the commands, do not run")
+    p.set_defaults(func=_cmd_postprocess)
 
     p = sub.add_parser("focus", help="serve a live focus-assist page")
     p.add_argument("--port", type=int, default=8080, help="HTTP port (default 8080)")

@@ -4,7 +4,10 @@ rclone copy is idempotent (it skips files already present with matching
 size/mtime), so re-running it is safe and provides natural catch-up after an
 offline period. Objects are laid out as:
 
-    <bucket>/<hostname>/<YYYY-MM-DD>/clip_*.mkv  (+ .pts, .json)
+    <bucket>/<hostname>/<YYYY-MM-DD>/clip_*.mkv  (+ .pts, .json, .preview.mp4, .motion.json)
+
+Half-written postprocess outputs (*.part) are excluded; they are renamed to
+their final names on completion and ride the next (idempotent) copy.
 
 After a date directory uploads cleanly, each clip is marked uploaded so the
 retention pruner may later reclaim its space.
@@ -53,6 +56,7 @@ def upload_day(cfg: Config, base: Path, day: date, *, dry_run: bool = False) -> 
     dest = f"{_rclone_remote_root(cfg)}/{day.isoformat()}"
     cmd = [
         "rclone", "copy", str(day_path), dest,
+        "--exclude", "*.part",
         "--transfers", "4", "--checkers", "8",
         "--retries", "10", "--low-level-retries", "20",
         "--verbose",
