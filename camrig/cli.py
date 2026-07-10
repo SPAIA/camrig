@@ -4,6 +4,7 @@ Subcommands:
   supervise   Run the long-lived capture supervisor + Cloudflare link (service).
   record      Record a single clip now (testing / manual; supports --dry-run).
   postprocess Generate preview + motion sidecars (one clip, or all pending).
+  upload      Flush pending clips to R2 now and prune (manual catch-up).
   focus       Serve a live focus-assist page (manual lens; reach it over Tailscale).
   boot        Boot tasks: NTP sync + catch-up upload + prune.
   shutdown    Upload today, set RTC wake alarm, power off.
@@ -73,6 +74,19 @@ def _cmd_postprocess(args, cfg) -> int:
     return 0 if ok else 1
 
 
+def _cmd_upload(args, cfg) -> int:
+    from . import upload
+
+    base = storage.select_base_dir(cfg)
+    if not args.dry_run and not upload.remote_reachable(cfg):
+        print("R2 remote not reachable", file=sys.stderr)
+        return 1
+    ok = upload.upload_pending(cfg, base, dry_run=args.dry_run)
+    if not args.dry_run:
+        storage.prune(cfg, base)
+    return 0 if ok else 1
+
+
 def _cmd_focus(args, cfg) -> int:
     from .focus import FocusConfig, run
 
@@ -136,6 +150,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="regenerate even if sidecars exist (after changing camrig/motion.py)")
     p.add_argument("--dry-run", action="store_true", help="print the commands, do not run")
     p.set_defaults(func=_cmd_postprocess)
+
+    p = sub.add_parser("upload", help="upload pending clips to R2 now, then prune")
+    p.add_argument("--dry-run", action="store_true", help="print the commands, do not run")
+    p.set_defaults(func=_cmd_upload)
 
     p = sub.add_parser("focus", help="serve a live focus-assist page")
     p.add_argument("--port", type=int, default=8080, help="HTTP port (default 8080)")

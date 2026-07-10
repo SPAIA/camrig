@@ -72,6 +72,18 @@ min_free_gb = 5
 
 [upload]
 enabled = true
+
+# Upload each clip as soon as its postprocess finishes, so device space frees
+# up through the day. false = uploads happen only on the nightly shutdown and
+# boot catch-up passes.
+immediate = true
+
+# Upload the full-resolution video itself. false = ship only the sidecars
+# (preview.mp4, motion.json, pts, json) — the full-res clip then exists only on
+# the device and is pruned by retention after keep_days, so pull anything you
+# want to keep before then.
+full_res = false
+
 # rclone remote name configured in /etc/camrig/rclone.conf (see rclone.conf.example).
 rclone_remote = "r2"
 bucket = "spaia-cam"

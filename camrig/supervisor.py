@@ -6,8 +6,9 @@ Runs as a long-lived asyncio service (cam-supervisor.service). It:
   window, and
 * serves on-demand "sessions" requested over the Cloudflare WebSocket
   (cloudlink), where a remote user triggers recording and a human counts bugs, and
-* kicks off a niced background postprocess (preview + motion sidecars) after
-  each finished clip; see camrig.postprocess.
+* after each finished clip, runs a niced background chain — postprocess
+  (preview + motion sidecars), immediate upload to R2, prune — so device space
+  is reclaimed without waiting for the nightly upload.
 
 Only one rpicam process may use the camera at a time, so a single asyncio lock
 serialises everything. Priority policy:
@@ -28,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from .config import Config
-from . import postprocess, record, storage
+from . import postprocess, record, storage, upload
 
 log = logging.getLogger("camrig.supervisor")
 
@@ -50,8 +51,8 @@ class Supervisor:
         self.cfg = cfg
         self.base = storage.select_base_dir(cfg)
         self._camera_lock = asyncio.Lock()
-        # Serialises post-capture jobs (preview + motion sidecars); the niced
-        # subprocesses never contend with a capture for the CPU.
+        # Serialises post-capture chains (sidecars -> upload -> prune); the
+        # niced subprocesses never contend with a capture for the CPU.
         self._post_lock = asyncio.Lock()
         self._active: SessionState | None = None
         self._recording: record.Recording | None = None
@@ -134,16 +135,45 @@ class Supervisor:
             "rc": rc,
         })
 
-        if rc == 0 and self.cfg.postprocess.enabled and paths.video.suffix == ".mkv":
-            asyncio.create_task(self._postprocess(paths.video))
+        if rc == 0 and (self.cfg.postprocess.enabled or self.cfg.upload.enabled):
+            asyncio.create_task(self._finish_clip(paths.video))
 
-    async def _postprocess(self, video) -> None:
-        """Generate the preview + motion sidecars for a finished clip."""
+    async def _finish_clip(self, video) -> None:
+        """Post-capture chain: sidecars, then immediate upload, then prune.
+
+        Uploading right after postprocess (rather than nightly) keeps device
+        space free: the clip is marked uploaded and becomes prune-eligible as
+        soon as it lands in R2. Any failure here just leaves the clip for the
+        boot/shutdown catch-up — never breaks the supervisor.
+        """
         async with self._post_lock:
+            processed = True
+            if self.cfg.postprocess.enabled and video.suffix == ".mkv":
+                try:
+                    processed = await asyncio.to_thread(
+                        postprocess.process_clip, self.cfg, video
+                    )
+                except Exception:
+                    log.exception("Postprocess crashed for %s", video.name)
+                    processed = False
+
+            if not (self.cfg.upload.enabled and self.cfg.upload.immediate):
+                return
             try:
-                await asyncio.to_thread(postprocess.process_clip, self.cfg, video)
-            except Exception:  # never let postprocess break the supervisor
-                log.exception("Postprocess crashed for %s", video.name)
+                if not await asyncio.to_thread(upload.remote_reachable, self.cfg):
+                    log.warning(
+                        "R2 not reachable; leaving %s for catch-up upload", video.name
+                    )
+                    return
+                uploaded = await asyncio.to_thread(upload.upload_clip, self.cfg, video)
+                # Only mark (= make prune-eligible) once everything shipped;
+                # an unprocessed clip stays unmarked so the day-level catch-up
+                # re-uploads it together with its late sidecars.
+                if uploaded and processed:
+                    storage.mark_uploaded(video)
+                    await asyncio.to_thread(storage.prune, self.cfg, self.base)
+            except Exception:
+                log.exception("Immediate upload crashed for %s", video.name)
 
     # ----- manual (triggered) sessions ---------------------------------
 

@@ -60,6 +60,11 @@ class StorageConfig:
 @dataclass
 class UploadConfig:
     enabled: bool = True
+    # Upload each clip right after its postprocess (False = nightly/boot only).
+    immediate: bool = True
+    # Ship the full-res video itself. False = sidecars only (preview, motion,
+    # pts, json); the full-res clip then lives only on the device until pruned.
+    full_res: bool = True
     rclone_remote: str = "r2"
     bucket: str = "spaia-cam"
 

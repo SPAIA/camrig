@@ -1,5 +1,13 @@
 """Upload recorded clips to Cloudflare R2 with rclone.
 
+Two paths share the same layout:
+
+* per-clip (``upload_clip``) — the supervisor ships each clip + sidecars as soon
+  as its postprocess finishes, so space can be reclaimed without waiting for the
+  nightly upload;
+* per-day (``upload_day``/``upload_pending``) — the boot/shutdown catch-up that
+  flushes anything the per-clip path missed (offline, crash).
+
 rclone copy is idempotent (it skips files already present with matching
 size/mtime), so re-running it is safe and provides natural catch-up after an
 offline period. Objects are laid out as:
@@ -8,6 +16,11 @@ offline period. Objects are laid out as:
 
 Half-written postprocess outputs (*.part) are excluded; they are renamed to
 their final names on completion and ride the next (idempotent) copy.
+
+With ``upload.full_res = false`` both paths ship only the sidecars: the
+full-res video never leaves the device. The clip is still marked uploaded once
+its sidecars land, so retention prunes the local full-res copy after
+``keep_days`` — pull anything worth keeping before then.
 
 After a date directory uploads cleanly, each clip is marked uploaded so the
 retention pruner may later reclaim its space.
@@ -46,6 +59,46 @@ def remote_reachable(cfg: Config, timeout: int = 15) -> bool:
         return False
 
 
+def upload_clip(cfg: Config, clip: Path, *, dry_run: bool = False) -> bool:
+    """Upload one clip and its sidecars now. Returns True on success.
+
+    Deliberately does NOT mark the clip uploaded — the caller decides that
+    (the supervisor only marks once the sidecars exist too, so the day-level
+    catch-up still picks up late sidecars for unmarked clips).
+
+    Fails fast (few retries): an offline rig just leaves the clip for the
+    boot/shutdown catch-up.
+    """
+    dest = f"{_rclone_remote_root(cfg)}/{clip.parent.name}"
+    # Only this clip's family; never in-progress parts or upload markers.
+    filters = ["- *.part", f"- {clip.stem}.*{storage.UPLOADED_MARKER}"]
+    if not cfg.upload.full_res:
+        filters += [f"- {clip.stem}{suffix}" for suffix in storage.CLIP_SUFFIXES]
+    filters += [f"+ {clip.stem}.*", "- *"]
+    cmd = [
+        "rclone", "copy", str(clip.parent), dest,
+        *(arg for f in filters for arg in ("--filter", f)),
+        "--transfers", "4",
+        "--retries", "3", "--low-level-retries", "10",
+        "--verbose",
+    ]
+    log.info("Uploading clip %s -> %s", clip.name, dest)
+    if dry_run:
+        print(" ".join(cmd))
+        return True
+
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as exc:
+        log.error(
+            "Per-clip upload failed for %s (rc=%s); leaving it for catch-up",
+            clip.name, exc.returncode,
+        )
+        return False
+    log.info("Uploaded %s", clip.name)
+    return True
+
+
 def upload_day(cfg: Config, base: Path, day: date, *, dry_run: bool = False) -> bool:
     """Upload one day's directory. Returns True on success."""
     day_path = base / day.isoformat()
@@ -54,9 +107,12 @@ def upload_day(cfg: Config, base: Path, day: date, *, dry_run: bool = False) -> 
         return True
 
     dest = f"{_rclone_remote_root(cfg)}/{day.isoformat()}"
+    excludes = ["*.part"]
+    if not cfg.upload.full_res:
+        excludes += [f"*{suffix}" for suffix in storage.CLIP_SUFFIXES]
     cmd = [
         "rclone", "copy", str(day_path), dest,
-        "--exclude", "*.part",
+        *(arg for pattern in excludes for arg in ("--exclude", pattern)),
         "--transfers", "4", "--checkers", "8",
         "--retries", "10", "--low-level-retries", "20",
         "--verbose",

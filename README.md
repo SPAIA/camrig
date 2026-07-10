@@ -15,7 +15,9 @@ What it does:
 - **Post-processes each clip on-device** in the idle gap between captures: a
   low-res **H.264 preview** for scrubbing plus a **per-frame motion-metrics
   sidecar** (placeholder analysis, the seed of the motion-trail tracker).
-- **Uploads each day's clips to Cloudflare R2** via rclone (sidecars included).
+- **Uploads each clip to Cloudflare R2 as soon as its sidecars are ready** (via
+  rclone), so device space is reclaimed early; nightly + boot catch-up uploads
+  cover anything recorded while offline.
 
 ## Why these choices (tracking fidelity)
 
@@ -97,6 +99,19 @@ starts mid-postprocess always wins the CPU; the ~27 idle minutes per half-hour
 slot are far more than the ~2–4 minutes a clip needs. Half-written outputs use a
 `*.part` name that the uploader excludes.
 
+As soon as a clip's sidecars exist it is **uploaded to R2 immediately** and
+marked, making it prune-eligible right away (retention still honours
+`keep_days`/`min_free_gb`) instead of holding the day on disk until the nightly
+upload. If the upload or postprocess fails, the clip simply stays unmarked and
+the boot/shutdown catch-up ships it — including any sidecars that arrived late.
+
+Two `[upload]` switches control this behaviour:
+
+- `immediate = false` — revert to nightly/boot-only uploads.
+- `full_res = false` — ship **only the sidecars** (preview, motion, pts, json);
+  the full-res video never leaves the device and retention prunes it after
+  `keep_days`, so pull any clip worth keeping before then.
+
 **The motion analysis is a placeholder** (frame differencing: per-frame
 `mean_abs_diff` and `active_fraction`). Iterate toward motion-trail tracking in
 [`camrig/motion.py`](camrig/motion.py) — it reads raw gray8 frames on stdin at
@@ -124,6 +139,7 @@ Admin/SSH access to the Pi itself is via **Tailscale** (unchanged); only the pub
 /opt/camrig/venv/bin/camrig record --seconds 10    # capture a 10s test clip
 /opt/camrig/venv/bin/camrig postprocess            # preview+motion for pending clips
 /opt/camrig/venv/bin/camrig postprocess --force    # regenerate (e.g. new motion code)
+/opt/camrig/venv/bin/camrig upload                 # flush pending clips to R2 + prune
 /opt/camrig/venv/bin/camrig focus                  # live focus-assist page (see below)
 /opt/camrig/venv/bin/camrig supervise --no-cloud   # run scheduler without Cloudflare
 /opt/camrig/venv/bin/camrig boot                   # NTP sync + catch-up upload
