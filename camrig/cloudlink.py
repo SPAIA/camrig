@@ -62,6 +62,11 @@ class CloudLink:
         except json.JSONDecodeError:
             log.warning("Ignoring non-JSON message")
             return
+        # A bare string/number is valid JSON; msg.get would raise and the
+        # AttributeError escapes run()'s except and kills the link.
+        if not isinstance(msg, dict):
+            log.warning("Ignoring JSON message that is not an object")
+            return
 
         mtype = msg.get("type")
         sup = self._supervisor
