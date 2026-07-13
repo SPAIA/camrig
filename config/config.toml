@@ -2,15 +2,25 @@
 # All values shown are the built-in defaults (see camrig/config.py); override here.
 
 [capture]
+# Camera backend: "rpicam" (Pi Global Shutter, colour IMX296) or "basler"
+# (Basler ace 2 mono over GigE — transport settings in [basler] below, wiring
+# and network setup in docs/basler-gige.md). width/height/framerate/quality/
+# shutter_us/clip_seconds apply to both backends.
+camera = "rpicam"
+
 # Capture profile: "mjpeg" (default daily pipeline, intra-only, clean frames),
-# "ffv1" (lossless intra, large), or "raw" (rpicam-raw Bayer mosaic, huge).
+# "ffv1" (lossless intra, large), or "raw" (unprocessed sensor frames, huge —
+# rpicam: Bayer mosaic; basler: gray8).
 profile = "mjpeg"
 
-# IMX296 full sensor resolution.
+# Full sensor resolution. IMX296: 1456x1088. For the Basler set your model's
+# native size (e.g. a2A1920-51gm: 1920x1200) — larger requests are clamped.
 width = 1456
 height = 1088
 
-# Highest feasible frame rate for the IMX296 at full res is ~60 fps.
+# Highest feasible frame rate for the IMX296 at full res is ~60 fps. For the
+# Basler, GigE bandwidth caps Mono8 at ~115 MB/s ≈ width*height*fps (e.g.
+# 1920x1200 tops out around 50 fps).
 framerate = 60
 
 # MJPEG quality (1-100). Higher = less compression, larger files, cleaner targets.
@@ -20,11 +30,13 @@ quality = 95
 # but needs adequate light. 0 = let the camera auto-expose (capped by framerate).
 shutter_us = 2000
 
-# Analogue gain. 0 = auto. Increase if shutter_us is too short for the lighting.
+# Sensor gain. 0 = auto. Increase if shutter_us is too short for the lighting.
+# Unit differs by backend: rpicam = analogue gain multiplier; basler = dB.
 gain = 0.0
 
-# ISP denoise mode. "cdn_off" disables temporal/3D denoise, which otherwise
-# smears or erases insect-sized moving targets. Other values: auto, cdn_fast, cdn_hq.
+# ISP denoise mode (rpicam only; the Basler mono path applies no denoise).
+# "cdn_off" disables temporal/3D denoise, which otherwise smears or erases
+# insect-sized moving targets. Other values: auto, cdn_fast, cdn_hq.
 denoise = "cdn_off"
 
 # Scheduled clip length in seconds (5 minutes).
@@ -32,6 +44,30 @@ clip_seconds = 180
 
 # Safety ceiling for human-triggered sessions; the supervisor force-stops after this.
 max_session_seconds = 600
+
+[basler]
+# Basler ace 2 GigE transport/device settings (used when capture.camera = "basler").
+# Requires pypylon in the venv: WITH_BASLER=1 ./setup/install.sh, and the GigE
+# network setup in docs/basler-gige.md. List reachable cameras with:
+#   /opt/camrig/venv/bin/python -m camrig.basler --list
+
+# Device selection: serial number and/or IP. Both empty = first camera found
+# (fine when the ace 2 is the only Basler on the link).
+serial = ""
+ip = ""
+
+# GevSCPSPacketSize (bytes). 1500 works on any link. If eth0 supports jumbo
+# frames (ip link set eth0 mtu 9000), 8192 cuts per-packet overhead — worth
+# trying before lowering the frame rate.
+packet_size = 1500
+
+# GevSCPD: camera-side pause (ticks) between packets. Raise (e.g. 1000+) if
+# you see failed grabs / dropped frames; costs peak bandwidth.
+inter_packet_delay = 0
+
+# Mono8 is what the mjpeg/ffv1 pipelines require. Higher bit depths (Mono10p,
+# Mono12p) only make sense with profile = "raw" (decode offline).
+pixel_format = "Mono8"
 
 [postprocess]
 # After each capture, generate per-clip sidecars on the Pi (in the idle gap
@@ -69,6 +105,12 @@ sd_fallback_dir = "/home/spaia/recordings"
 keep_days = 2
 # Start pruning oldest *uploaded* clips when free space drops below this (GiB).
 min_free_gb = 5
+# Delete a clip's local files as soon as its upload is confirmed, ignoring
+# keep_days and min_free_gb. Frees space fastest.
+# NOTE: with upload.full_res = false the full-res clip itself never uploads —
+# the clip counts as uploaded once its sidecars land, so the full-res copy is
+# deleted immediately and there is no window to pull it off the device.
+delete_after_upload = true
 
 [upload]
 enabled = true
@@ -86,7 +128,7 @@ full_res = false
 
 # rclone remote name configured in /etc/camrig/rclone.conf (see rclone.conf.example).
 rclone_remote = "r2"
-bucket = "spaia-cam"
+bucket = "spaia-vision"
 
 [power]
 # Hour to wake the next morning (matches schedule.start_hour).

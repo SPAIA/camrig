@@ -13,6 +13,11 @@ dependencies = [
     "numpy>=1.26",
 ]
 
+[project.optional-dependencies]
+# Basler ace 2 GigE backend (capture.camera = "basler"). pypylon bundles the
+# pylon runtime and ships aarch64 wheels, so no separate SDK install is needed.
+basler = ["pypylon>=3.0"]
+
 [project.scripts]
 camrig = "camrig.cli:main"
 

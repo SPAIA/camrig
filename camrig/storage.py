@@ -105,18 +105,20 @@ def prune(cfg: Config, base: Path) -> int:
 
     A clip is eligible only if it has been uploaded AND is older than
     ``keep_days``. Pruning stops once free space is above ``min_free_gb``.
-    Returns the number of clips removed.
+    With ``delete_after_upload`` both limits are bypassed: every uploaded clip
+    is deleted immediately. Returns the number of clips removed.
     """
+    immediate = cfg.storage.delete_after_upload
     keep_seconds = cfg.storage.keep_days * 86400
     now = time.time()
     removed = 0
 
     for clip in iter_clips(base):
-        if free_gib(base) >= cfg.storage.min_free_gb:
+        if not immediate and free_gib(base) >= cfg.storage.min_free_gb:
             break
         if not is_uploaded(clip):
             continue
-        if now - clip.stat().st_mtime < keep_seconds:
+        if not immediate and now - clip.stat().st_mtime < keep_seconds:
             continue
         for companion in _clip_companions(clip):
             try:

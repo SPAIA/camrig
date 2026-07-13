@@ -37,16 +37,34 @@ What it does:
 
 ## Capture profiles (switchable, `capture.profile`)
 
-| Profile | Codec | Use | Notes |
-|---|---|---|---|
-| `mjpeg` *(default)* | Motion-JPEG in MKV | Daily pipeline | Intra-only, clean frames, manageable upload size. |
-| `ffv1` | Lossless FFV1 in MKV | Fidelity experiments | Software encode likely can't sustain 60 fps at full res. |
-| `raw` | rpicam-raw Bayer | Short fidelity tests | Huge files; NVMe only. Colour mosaic — demosaic offline. |
+| Profile             | Codec                | Use                  | Notes                                                    |
+| ------------------- | -------------------- | -------------------- | -------------------------------------------------------- |
+| `mjpeg` *(default)* | Motion-JPEG in MKV   | Daily pipeline       | Intra-only, clean frames, manageable upload size.        |
+| `ffv1`              | Lossless FFV1 in MKV | Fidelity experiments | Software encode likely can't sustain 60 fps at full res. |
+| `raw`               | rpicam-raw Bayer     | Short fidelity tests | Huge files; NVMe only. Colour mosaic — demosaic offline. |
 
 **Frame rate / lighting:** the IMX296 maxes around **60 fps** at full res
 (1456×1088). To actually reach it the shutter must be ≤ ~16 ms; to *freeze* insect
 motion use a short shutter (default `shutter_us = 2000`), which needs good lighting.
 Raise `gain` if too dark. These are manual for repeatability — tune in `config.toml`.
+
+## Second backend: Basler ace 2 mono over GigE (comparison rig)
+
+Set `capture.camera = "basler"` (or per-run `camrig record --camera basler`) to
+capture from a **Basler ace 2 mono** connected to the Pi's Ethernet port — a
+global-shutter mono sensor to compare against the colour IMX296 (no Bayer
+filter: more light sensitivity and per-pixel sharpness). The backend
+(`camrig/basler.py`, via pypylon) presents the same interface as rpicam — same
+profiles, `.pts` per-frame timestamps (from the camera's **hardware clock**),
+metadata sidecar, postprocess, upload, and `camrig focus --camera basler` for
+lens focusing — so clips from both cameras flow through one pipeline and are
+distinguished by the `camera`/`sensor` fields in their `.json`.
+
+Install with `WITH_BASLER=1 sudo ./setup/install.sh`; the `[basler]` config
+section selects the device and tunes the GigE transport. **Wiring, IP setup,
+and bandwidth limits (GigE caps Mono8 at ~115 MB/s ≈ width×height×fps) are in
+[`docs/basler-gige.md`](docs/basler-gige.md).** The Pi's internet then moves to
+Wi-Fi — eth0 becomes the dedicated camera link.
 
 ## Install (on the Pi, Debian Trixie / Pi OS)
 
@@ -64,9 +82,11 @@ Then finish the three secrets/config items it can't guess:
 
 1. **`/etc/camrig/config.toml`** — storage paths, `worker_ws_url`, `device_id`, R2
    `bucket`. See [`config/config.toml`](config/config.toml) for every key.
-2. **`/etc/camrig/rclone.conf`** (chmod 0600) — R2 credentials; template in
-   [`config/rclone.conf.example`](config/rclone.conf.example).
-3. **`/etc/camrig/device_token`** (chmod 0600) — the bearer token the Worker expects.
+2. **`/etc/camrig/rclone.conf`** (root:$CAM_USER, 0640 — the supervisor reads it) —
+   R2 credentials; template in [`config/rclone.conf.example`](config/rclone.conf.example).
+   The `endpoint` is the account root (`https://<ACCOUNT_ID>.r2.cloudflarestorage.com`),
+   **without** the bucket name.
+3. **`/etc/camrig/device_token`** (root:$CAM_USER, 0640) — the bearer token the Worker expects.
 
 Reboot so the EEPROM change and `video`/`render` group membership take effect.
 
@@ -195,6 +215,8 @@ during setup or pause `cam-supervisor` first.
 - **Battery deployment:** add an **ESP32 wake-on-GPIO** companion (Pi 5
   `WAKE_ON_GPIO=1`) so the Pi can sleep between sessions and wake on demand. Today's
   web trigger assumes the Pi is already on during the daytime window.
-- **Basler dart (USB3):** a second capture backend slots into `camrig/record.py`
-  behind the same profile/metadata interface.
+- ~~**Basler (second backend)**~~ — done: the ace 2 GigE backend lives in
+  [`camrig/basler.py`](camrig/basler.py) behind the same profile/metadata
+  interface. A USB3 dart would reuse the same module (pypylon is
+  transport-agnostic; drop the GigE-specific `[basler]` keys).
 - **Live preview** in the page via a libcamera low-res second stream.

@@ -49,11 +49,14 @@ def _cmd_record(args, cfg) -> int:
     day_dir = storage.day_dir(base)
     if args.profile:
         cfg.capture.profile = args.profile
+    if args.camera:
+        cfg.capture.camera = args.camera
     record.record_clip(
         cfg.capture, day_dir,
         trigger="triggered" if args.triggered else "scheduled",
         duration_seconds=args.seconds,
         dry_run=args.dry_run,
+        basler=cfg.basler,
     )
     return 0
 
@@ -99,8 +102,9 @@ def _cmd_focus(args, cfg) -> int:
         port=args.port,
         shutter_us=args.shutter,
         gain=args.gain,
+        camera=args.camera,
     )
-    return run(focus_cfg, dry_run=args.dry_run)
+    return run(focus_cfg, basler=cfg.basler, dry_run=args.dry_run)
 
 
 def _cmd_boot(args, cfg) -> int:
@@ -115,6 +119,7 @@ def _cmd_shutdown(args, cfg) -> int:
 
 def _cmd_status(args, cfg) -> int:
     base = storage.select_base_dir(cfg)
+    print(f"camera          : {cfg.capture.camera}")
     print(f"profile         : {cfg.capture.profile}")
     print(f"resolution      : {cfg.capture.width}x{cfg.capture.height}@{cfg.capture.framerate}")
     print(f"window          : {cfg.schedule.start_hour:02d}:00-{cfg.schedule.stop_hour:02d}:00 "
@@ -137,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_supervise)
 
     p = sub.add_parser("record", help="record a single clip now")
+    p.add_argument("--camera", choices=["rpicam", "basler"],
+                   help="camera backend (default: capture.camera in config)")
     p.add_argument("--profile", choices=["mjpeg", "ffv1", "raw"])
     p.add_argument("--seconds", type=int, help="override clip length")
     p.add_argument("--triggered", action="store_true", help="tag as a manual session")
@@ -156,6 +163,8 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_upload)
 
     p = sub.add_parser("focus", help="serve a live focus-assist page")
+    p.add_argument("--camera", choices=["rpicam", "basler"],
+                   help="camera backend (default: capture.camera in config)")
     p.add_argument("--port", type=int, default=8080, help="HTTP port (default 8080)")
     p.add_argument("--width", type=int, help="stream width (default: full sensor)")
     p.add_argument("--height", type=int, help="stream height (default: full sensor)")

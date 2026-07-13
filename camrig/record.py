@@ -1,14 +1,22 @@
-"""Build and run a single capture for the colour IMX296.
+"""Build and run a single capture.
+
+Two camera backends behind one interface (``capture.camera``):
+
+* ``rpicam`` (default) — the Pi Global Shutter colour IMX296 via rpicam-vid /
+  rpicam-raw.
+* ``basler``           — a Basler ace 2 mono over GigE via ``camrig.basler``
+  (a producer subprocess with an rpicam-shaped interface; transport settings
+  in the [basler] config section, wiring in docs/basler-gige.md).
 
 Three intra-only profiles, all preserving small moving targets:
 
-* ``mjpeg`` (default) — rpicam-vid emits an MJPEG stream piped to ffmpeg, which
-  muxes it into a Matroska container without re-encoding. Each frame is
-  independent (no inter-frame motion artefacts on tiny insects).
+* ``mjpeg`` (default) — an MJPEG stream piped to/encoded by ffmpeg into a
+  Matroska container. Each frame is independent (no inter-frame motion
+  artefacts on tiny insects).
 * ``ffv1``           — lossless intra codec via ffmpeg. Maximum fidelity, large
   files; software encoding likely cannot sustain 60 fps at full res.
-* ``raw``            — rpicam-raw writes the unprocessed Bayer sensor frames
-  (colour mosaic; demosaic offline). Huge; intended for short fidelity
+* ``raw``            — the unprocessed sensor frames (rpicam: Bayer mosaic,
+  demosaic offline; basler: gray8). Huge; intended for short fidelity
   experiments.
 
 Every clip is accompanied by:
@@ -29,13 +37,14 @@ import logging
 import shlex
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
-from .config import CaptureConfig
+from .config import BaslerConfig, CaptureConfig
 
 log = logging.getLogger("camrig.record")
 
@@ -82,16 +91,97 @@ def _common_rpicam_args(cfg: CaptureConfig, pts_path: Path, duration_ms: int) ->
     return args
 
 
+def mjpeg_qv(quality: int) -> int:
+    """Map rpicam-style quality (1-100, higher = better) to ffmpeg -q:v (2-31,
+    lower = better) for the Basler MJPEG encode. Approximate, but keeps one
+    quality knob meaning roughly the same thing on both backends."""
+    return max(2, min(31, round(31 - quality * 29 / 100)))
+
+
+def _basler_producer(
+    cfg: CaptureConfig, basler: BaslerConfig, pts_path: Path, duration_ms: int,
+    output: str,
+) -> list[str]:
+    """argv for the camrig.basler producer (raw gray frames on stdout/file)."""
+    args = [
+        sys.executable, "-m", "camrig.basler",
+        "--width", str(cfg.width),
+        "--height", str(cfg.height),
+        "--framerate", str(cfg.framerate),
+        "--timeout", str(duration_ms),
+        "--save-pts", str(pts_path),
+        "--pixel-format", basler.pixel_format,
+        "-o", output,
+    ]
+    if cfg.shutter_us > 0:
+        args += ["--shutter", str(cfg.shutter_us)]
+    if cfg.gain > 0:
+        args += ["--gain", str(cfg.gain)]
+    if basler.serial:
+        args += ["--serial", basler.serial]
+    if basler.ip:
+        args += ["--ip", basler.ip]
+    if basler.packet_size > 0:
+        args += ["--packet-size", str(basler.packet_size)]
+    if basler.inter_packet_delay > 0:
+        args += ["--inter-packet-delay", str(basler.inter_packet_delay)]
+    return args
+
+
+def _build_basler_commands(
+    cfg: CaptureConfig, basler: BaslerConfig, paths: ClipPaths, duration_ms: int
+) -> list[list[str]]:
+    """Basler pipelines: same profiles, ffmpeg does the encoding.
+
+    The producer emits raw gray8 frames, so mjpeg/ffv1 encode on the Pi.
+    ffmpeg's mjpeg encoder has no grayscale mode — yuvj444p keeps full
+    luma resolution and the (flat) chroma planes cost almost no bits.
+    """
+    profile = cfg.profile
+    if profile == "raw":
+        # Producer writes sensor frames (gray8 for Mono8) straight to disk.
+        return [_basler_producer(cfg, basler, paths.pts, duration_ms,
+                                 str(paths.video))]
+
+    producer = _basler_producer(cfg, basler, paths.pts, duration_ms, "-")
+    ffmpeg_in = [
+        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+        "-f", "rawvideo", "-pix_fmt", "gray",
+        "-s", f"{cfg.width}x{cfg.height}",
+        "-r", str(cfg.framerate),
+        "-i", "-",
+    ]
+    if profile == "mjpeg":
+        return [producer, [
+            *ffmpeg_in,
+            "-c:v", "mjpeg", "-q:v", str(mjpeg_qv(cfg.quality)),
+            "-pix_fmt", "yuvj444p",
+            str(paths.video),
+        ]]
+    if profile == "ffv1":
+        return [producer, [
+            *ffmpeg_in,
+            "-c:v", "ffv1", "-level", "3", "-pix_fmt", "gray",
+            str(paths.video),
+        ]]
+    raise ValueError(f"Unknown capture profile: {profile!r} (expected one of {PROFILES})")
+
+
 def build_commands(
     cfg: CaptureConfig,
     paths: ClipPaths,
     duration_ms: int,
+    basler: BaslerConfig | None = None,
 ) -> list[list[str]]:
     """Return the pipeline as a list of argv lists.
 
     A single-element list runs one process; a two-element list is a producer
-    piped into a consumer (rpicam stdout -> ffmpeg stdin).
+    piped into a consumer (camera stdout -> ffmpeg stdin).
     """
+    if cfg.camera == "basler":
+        return _build_basler_commands(cfg, basler or BaslerConfig(), paths, duration_ms)
+    if cfg.camera != "rpicam":
+        raise ValueError(f"Unknown camera backend: {cfg.camera!r} (expected rpicam|basler)")
     profile = cfg.profile
     if profile == "mjpeg":
         rpicam = [
@@ -171,7 +261,8 @@ def write_metadata(
         "session_id": session_id,
         "started_at_utc": started_at.astimezone(timezone.utc).isoformat(),
         "capture": asdict(cfg),
-        "sensor": "imx296",
+        "camera": cfg.camera,
+        "sensor": "imx296" if cfg.camera == "rpicam" else "basler-ace2-mono",
     }
     if extra:
         meta.update(extra)
@@ -232,6 +323,7 @@ def record_clip(
     session_id: str | None = None,
     duration_seconds: int | None = None,
     dry_run: bool = False,
+    basler: BaslerConfig | None = None,
 ) -> ClipPaths:
     """Record one clip synchronously (used by the CLI and for tests).
 
@@ -241,7 +333,7 @@ def record_clip(
     started_at = datetime.now().astimezone()
     paths = clip_paths(day_dir, cfg.profile, started_at)
     duration_ms = int((duration_seconds or cfg.clip_seconds) * 1000)
-    commands = build_commands(cfg, paths, duration_ms)
+    commands = build_commands(cfg, paths, duration_ms, basler=basler)
 
     log.info("Capture (%s): %s", trigger, describe_commands(commands))
     if dry_run:

@@ -19,16 +19,38 @@ DEFAULT_CONFIG_PATH = Path(os.environ.get("CAMRIG_CONFIG", "/etc/camrig/config.t
 
 @dataclass
 class CaptureConfig:
+    # Camera backend: "rpicam" (Pi Global Shutter IMX296) or "basler"
+    # (Basler ace 2 mono over GigE; transport settings live in [basler]).
+    camera: str = "rpicam"
     profile: str = "mjpeg"
     width: int = 1456
     height: int = 1088
     framerate: int = 60
     quality: int = 95
     shutter_us: int = 2000
+    # rpicam: analogue gain multiplier. basler: sensor gain in dB. 0 = auto.
     gain: float = 0.0
     denoise: str = "cdn_off"
     clip_seconds: int = 300
     max_session_seconds: int = 600
+
+
+@dataclass
+class BaslerConfig:
+    """GigE transport/device settings for the Basler backend (camera = "basler")."""
+
+    # Device selection; both empty = first Basler GigE camera found.
+    serial: str = ""
+    ip: str = ""
+    # GevSCPSPacketSize (bytes). 1500 works on any link; 8192/9000 needs a
+    # jumbo-frame MTU on the camera NIC and cuts per-packet overhead.
+    packet_size: int = 1500
+    # GevSCPD (ticks) between packets; raise if frames drop while other
+    # traffic shares the link. 0 = as fast as the wire allows.
+    inter_packet_delay: int = 0
+    # Mono8 is what the mjpeg/ffv1 pipelines expect; other formats (e.g.
+    # Mono12p) are only meaningful with profile = "raw".
+    pixel_format: str = "Mono8"
 
 
 @dataclass
@@ -55,6 +77,9 @@ class StorageConfig:
     sd_fallback_dir: str = "/home/spaia/recordings"
     keep_days: int = 2
     min_free_gb: int = 10
+    # Delete a clip's local files as soon as it is marked uploaded, instead of
+    # holding them under the keep_days / min_free_gb retention rules.
+    delete_after_upload: bool = False
 
 
 @dataclass
@@ -84,6 +109,7 @@ class CloudConfig:
 @dataclass
 class Config:
     capture: CaptureConfig = field(default_factory=CaptureConfig)
+    basler: BaslerConfig = field(default_factory=BaslerConfig)
     postprocess: PostprocessConfig = field(default_factory=PostprocessConfig)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)

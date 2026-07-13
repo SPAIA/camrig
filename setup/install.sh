@@ -32,7 +32,13 @@ echo "==> Creating Python venv at $PREFIX/venv"
 mkdir -p "$PREFIX"
 python3 -m venv "$PREFIX/venv"
 "$PREFIX/venv/bin/pip" install --upgrade pip
-"$PREFIX/venv/bin/pip" install "$REPO_DIR"
+# WITH_BASLER=1 adds pypylon for the Basler ace 2 GigE backend
+# (capture.camera = "basler"; network setup in docs/basler-gige.md).
+if [[ "${WITH_BASLER:-0}" == "1" ]]; then
+  "$PREFIX/venv/bin/pip" install "$REPO_DIR[basler]"
+else
+  "$PREFIX/venv/bin/pip" install "$REPO_DIR"
+fi
 
 echo "==> Granting $CAM_USER camera access (video, render groups)"
 usermod -aG video,render "$CAM_USER"
@@ -46,25 +52,28 @@ else
   echo "    $ETC/config.toml exists; leaving it"
 fi
 if [[ ! -f "$ETC/rclone.conf" ]]; then
-  install -m 0600 "$REPO_DIR/config/rclone.conf.example" "$ETC/rclone.conf"
-  echo "    wrote $ETC/rclone.conf TEMPLATE — fill in your R2 credentials (chmod 0600)"
+  install -m 0640 "$REPO_DIR/config/rclone.conf.example" "$ETC/rclone.conf"
+  echo "    wrote $ETC/rclone.conf TEMPLATE — fill in your R2 credentials"
 fi
 if [[ ! -f "$ETC/device_token" ]]; then
   touch "$ETC/device_token"
-  chmod 0600 "$ETC/device_token"
   echo "    created empty $ETC/device_token — paste the Worker device bearer token"
 fi
+# The supervisor runs as $CAM_USER and must read both secrets (rclone uploads,
+# Worker bearer token); keep them root-owned but group-readable.
+chown "root:$CAM_USER" "$ETC/rclone.conf" "$ETC/device_token"
+chmod 0640 "$ETC/rclone.conf" "$ETC/device_token"
 # rclone (run by root services) reads this config path explicitly.
 export RCLONE_CONFIG="$ETC/rclone.conf"
 
 echo "==> Installing systemd units"
 install -m 0644 "$REPO_DIR/systemd/"*.service "$REPO_DIR/systemd/"*.timer /etc/systemd/system/
-# Point services at the per-rig rclone config so root finds the R2 remote.
-mkdir -p /etc/systemd/system/cam-boot.service.d /etc/systemd/system/cam-shutdown.service.d
-printf '[Service]\nEnvironment=RCLONE_CONFIG=%s\n' "$ETC/rclone.conf" \
-  | tee /etc/systemd/system/cam-boot.service.d/rclone.conf >/dev/null
-printf '[Service]\nEnvironment=RCLONE_CONFIG=%s\n' "$ETC/rclone.conf" \
-  > /etc/systemd/system/cam-shutdown.service.d/rclone.conf
+# Point every service that shells out to rclone at the per-rig config.
+for unit in cam-boot cam-shutdown cam-supervisor; do
+  mkdir -p "/etc/systemd/system/$unit.service.d"
+  printf '[Service]\nEnvironment=RCLONE_CONFIG=%s\n' "$ETC/rclone.conf" \
+    > "/etc/systemd/system/$unit.service.d/rclone.conf"
+done
 # Patch the camera user into the supervisor unit if it differs from default.
 if [[ "$CAM_USER" != "spaia" ]]; then
   sed -i "s/^User=spaia/User=$CAM_USER/" /etc/systemd/system/cam-supervisor.service

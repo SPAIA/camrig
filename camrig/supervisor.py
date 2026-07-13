@@ -73,6 +73,7 @@ class Supervisor:
             "started_at_utc": s.started_at_utc if s else None,
             "clip": s.clip_name if s else None,
             "profile": self.cfg.capture.profile,
+            "camera": self.cfg.capture.camera,
             "disk_free_gb": round(storage.free_gib(self.base), 1),
         }
 
@@ -95,7 +96,7 @@ class Supervisor:
             paths = record.clip_paths(day_dir, self.cfg.capture.profile, started_at)
             duration = duration_seconds or self.cfg.capture.clip_seconds
             commands = record.build_commands(
-                self.cfg.capture, paths, int(duration * 1000)
+                self.cfg.capture, paths, int(duration * 1000), basler=self.cfg.basler
             )
             record.write_metadata(
                 paths, self.cfg.capture,

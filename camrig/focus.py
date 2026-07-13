@@ -1,19 +1,21 @@
-"""Live focus-assist server for the manual-focus IMX296 lens.
+"""Live focus-assist server for manual-focus C/CS-mount lenses.
 
-The Global Shutter camera uses a fixed C/CS-mount lens whose focus is set by
-turning the lens ring — there is no autofocus. On a headless Pi reached over
-Tailscale there is no local display to focus against, so this module serves a
-low-latency MJPEG live view over HTTP plus a live sharpness readout: open the
-printed URL in a browser on your laptop and turn the lens ring until the focus
-score peaks (an optional audio tone rises in pitch as focus improves, so you can
-watch the lens instead of the screen).
+Both cameras (IMX296 Global Shutter and Basler ace 2) use manual lenses whose
+focus is set by turning the lens ring — there is no autofocus. On a headless Pi
+reached over Tailscale there is no local display to focus against, so this
+module serves a low-latency MJPEG live view over HTTP plus a live sharpness
+readout: open the printed URL in a browser on your laptop and turn the lens
+ring until the focus score peaks (an optional audio tone rises in pitch as
+focus improves, so you can watch the lens instead of the screen).
 
 Design notes:
 
-* **Zero extra dependencies.** rpicam-vid emits a plain MJPEG byte stream
-  (concatenated JPEGs) on stdout; a producer thread splits it into frames and a
-  stdlib ``ThreadingHTTPServer`` hands out the latest one. All the sharpness
-  maths (variance of the Laplacian over a centre ROI) runs client-side in the
+* **Zero extra dependencies.** The camera pipeline emits a plain MJPEG byte
+  stream (concatenated JPEGs) on stdout — rpicam-vid natively; the Basler
+  backend pipes raw gray frames from ``camrig.basler`` through ffmpeg's mjpeg
+  encoder. A producer thread splits the stream into frames and a stdlib
+  ``ThreadingHTTPServer`` hands out the latest one. All the sharpness maths
+  (variance of the Laplacian over a centre ROI) runs client-side in the
   browser, where there is CPU and a screen to spare — the Pi only muxes bytes.
 * **Denoise is forced off** regardless of config: temporal/spatial denoise
   smooths high-frequency detail and would make a soft image look focused.
@@ -31,11 +33,13 @@ import logging
 import shlex
 import socket
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .config import CaptureConfig
+from .config import BaslerConfig, CaptureConfig
+from .record import mjpeg_qv
 
 log = logging.getLogger("camrig.focus")
 
@@ -46,6 +50,7 @@ _SOI = b"\xff\xd8"  # JPEG start-of-image marker
 class FocusConfig:
     """Parameters for a focus-assist streaming session."""
 
+    camera: str = "rpicam"
     width: int = 1456
     height: int = 1088
     framerate: int = 15
@@ -57,18 +62,55 @@ class FocusConfig:
     @classmethod
     def from_capture(cls, cap: CaptureConfig, **overrides) -> "FocusConfig":
         """Seed from the capture config (full-sensor resolution), then override."""
-        base = cls(width=cap.width, height=cap.height)
+        base = cls(camera=cap.camera, width=cap.width, height=cap.height)
         for key, value in overrides.items():
             if value is not None:
                 setattr(base, key, value)
         return base
 
 
-def build_focus_command(cfg: FocusConfig) -> list[str]:
-    """Return the rpicam-vid argv that streams MJPEG to stdout forever.
+def build_focus_commands(
+    cfg: FocusConfig, basler: BaslerConfig | None = None
+) -> list[list[str]]:
+    """Return the pipeline (list of argv lists) that streams MJPEG to stdout
+    forever: rpicam-vid alone, or camrig.basler piped into ffmpeg.
 
     Pure function (no camera required) so it can be printed under --dry-run.
     """
+    if cfg.camera == "basler":
+        bas = basler or BaslerConfig()
+        producer = [
+            sys.executable, "-m", "camrig.basler",
+            "--width", str(cfg.width),
+            "--height", str(cfg.height),
+            "--framerate", str(cfg.framerate),
+            "--timeout", "0",  # run until we stop it
+            "-o", "-",
+        ]
+        if cfg.shutter_us > 0:
+            producer += ["--shutter", str(cfg.shutter_us)]
+        if cfg.gain > 0:
+            producer += ["--gain", str(cfg.gain)]
+        if bas.serial:
+            producer += ["--serial", bas.serial]
+        if bas.ip:
+            producer += ["--ip", bas.ip]
+        if bas.packet_size > 0:
+            producer += ["--packet-size", str(bas.packet_size)]
+        if bas.inter_packet_delay > 0:
+            producer += ["--inter-packet-delay", str(bas.inter_packet_delay)]
+        ffmpeg = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-f", "rawvideo", "-pix_fmt", "gray",
+            "-s", f"{cfg.width}x{cfg.height}",
+            "-r", str(cfg.framerate),
+            "-i", "-",
+            "-c:v", "mjpeg", "-q:v", str(mjpeg_qv(cfg.quality)), "-pix_fmt", "yuvj444p",
+            "-flush_packets", "1",  # push each frame out promptly for low latency
+            "-f", "mjpeg", "-",
+        ]
+        return [producer, ffmpeg]
+
     args = [
         "rpicam-vid",
         "--camera", "0",
@@ -87,7 +129,7 @@ def build_focus_command(cfg: FocusConfig) -> list[str]:
         args += ["--shutter", str(cfg.shutter_us)]
     if cfg.gain > 0:
         args += ["--gain", str(cfg.gain)]
-    return args
+    return [args]
 
 
 class FrameBuffer:
@@ -323,18 +365,28 @@ def _local_urls(port: int) -> list[str]:
     return urls
 
 
-def run(cfg: FocusConfig, *, dry_run: bool = False) -> int:
+def run(
+    cfg: FocusConfig, *, basler: BaslerConfig | None = None, dry_run: bool = False
+) -> int:
     """Start the camera stream and serve the focus-assist page until Ctrl-C."""
-    command = build_focus_command(cfg)
-    log.info("Focus stream: %s", shlex.join(command))
+    commands = build_focus_commands(cfg, basler)
+    rendered = " | ".join(shlex.join(cmd) for cmd in commands)
+    log.info("Focus stream: %s", rendered)
     if dry_run:
-        print(shlex.join(command))
+        print(rendered)
         return 0
 
     buffer = FrameBuffer()
-    proc = subprocess.Popen(command, stdout=subprocess.PIPE)
+    procs: list[subprocess.Popen] = []
+    stdin = None
+    for command in commands:
+        proc = subprocess.Popen(command, stdin=stdin, stdout=subprocess.PIPE)
+        if stdin is not None:
+            stdin.close()  # let the producer see SIGPIPE if the consumer dies
+        stdin = proc.stdout
+        procs.append(proc)
     reader = threading.Thread(
-        target=_split_mjpeg, args=(proc.stdout, buffer), daemon=True
+        target=_split_mjpeg, args=(procs[-1].stdout, buffer), daemon=True
     )
     reader.start()
 
@@ -342,7 +394,7 @@ def run(cfg: FocusConfig, *, dry_run: bool = False) -> int:
     server.buffer = buffer  # type: ignore[attr-defined]
     server.daemon_threads = True
 
-    print(f"\ncamrig focus — {cfg.width}x{cfg.height}@{cfg.framerate} q{cfg.quality}")
+    print(f"\ncamrig focus — {cfg.camera} {cfg.width}x{cfg.height}@{cfg.framerate} q{cfg.quality}")
     print("Open in a browser on your tailnet, turn the lens ring to peak the score:")
     for url in _local_urls(cfg.port):
         print(f"  {url}")
@@ -354,11 +406,12 @@ def run(cfg: FocusConfig, *, dry_run: bool = False) -> int:
         pass
     finally:
         server.shutdown()
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+        for proc in procs:  # producer first, so consumers see EOF and drain
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
         buffer.close()
     return 0
