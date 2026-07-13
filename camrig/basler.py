@@ -114,16 +114,31 @@ def _configure_roi(camera, width: int, height: int) -> tuple[int, int]:
 
 
 def _list_cameras(pylon) -> int:
-    devices = pylon.TlFactory.GetInstance().EnumerateDevices()
+    """List cameras, including GigE devices pylon can see but not open
+    (wrong subnet / unconfigured IP) — those are the common bring-up state."""
+    try:
+        tl = pylon.TlFactory.GetInstance().CreateTl("BaslerGigE")
+        devices = tl.EnumerateAllDevices()
+    except Exception:  # no GigE transport available; fall back to openable only
+        devices = pylon.TlFactory.GetInstance().EnumerateDevices()
     if not devices:
-        print("No Basler cameras found (check link, IP subnet, and pylon install).")
+        print("No Basler cameras found — not even by broadcast discovery.")
+        print("Check: cable/camera power, link up (ip -br link show eth0), and")
+        print("that eth0 has an IPv4 address (discovery needs a source address).")
         return 1
+    openable = {d.GetSerialNumber()
+                for d in pylon.TlFactory.GetInstance().EnumerateDevices()}
     for dev in devices:
-        try:
-            ip = dev.GetIpAddress()
-        except Exception:  # non-GigE transports have no IP property
-            ip = "-"
-        print(f"{dev.GetModelName()}  serial={dev.GetSerialNumber()}  ip={ip}")
+        def _get(name):
+            try:
+                return getattr(dev, f"Get{name}")()
+            except Exception:
+                return "-"
+        state = ("ok" if dev.GetSerialNumber() in openable
+                 else "UNREACHABLE (IP not on eth0's subnet — fix camera or Pi IP)")
+        print(f"{dev.GetModelName()}  serial={dev.GetSerialNumber()}  "
+              f"ip={_get('IpAddress')}/{_get('SubnetMask')}  "
+              f"mac={_get('MacAddress')}  [{state}]")
     return 0
 
 
