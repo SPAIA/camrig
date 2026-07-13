@@ -78,9 +78,11 @@ for unit in cam-boot cam-shutdown cam-supervisor; do
   printf '[Service]\nEnvironment=RCLONE_CONFIG=%s\n' "$ETC/rclone.conf" \
     > "/etc/systemd/system/$unit.service.d/rclone.conf"
 done
-# Patch the camera user into the supervisor unit if it differs from default.
+# Patch the camera user (and its primary group, which must match so the
+# root:$CAM_USER 0640 secrets stay readable) into the supervisor unit.
 if [[ "$CAM_USER" != "spaia" ]]; then
   sed -i "s/^User=spaia/User=$CAM_USER/" /etc/systemd/system/cam-supervisor.service
+  sed -i "s/^Group=spaia/Group=$CAM_USER/" /etc/systemd/system/cam-supervisor.service
 fi
 
 systemctl daemon-reload
@@ -95,7 +97,7 @@ cat <<EOF
 
 Done. Next steps:
   1. Edit $ETC/config.toml (storage paths, worker_ws_url, device_id, bucket).
-  2. Fill $ETC/rclone.conf with your R2 credentials (chmod 0600).
+  2. Fill $ETC/rclone.conf with your R2 credentials (root:$CAM_USER, chmod 0640).
   3. Paste the Worker device token into $ETC/device_token.
   4. Reboot so the EEPROM change and group membership take effect.
 

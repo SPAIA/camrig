@@ -5,10 +5,11 @@ Wants=network.target
 
 [Service]
 Type=exec
-# Runs as the camera user (must be in the 'video' group; see install.sh).
+# Keep the user's own primary group: the secrets in /etc/camrig are
+# root:$CAM_USER 0640 and unreadable if Group= overrides it with 'video'.
 User=spaia
-Group=video
-SupplementaryGroups=render
+Group=spaia
+SupplementaryGroups=video render
 ExecStart=/opt/camrig/venv/bin/camrig supervise
 Restart=on-failure
 RestartSec=5
