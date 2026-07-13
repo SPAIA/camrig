@@ -1,7 +1,8 @@
 """Boot orchestration (cam-boot.service, oneshot at startup).
 
-Order: sync the clock via NTP (if online), finish any postprocess a crash or
-power-off interrupted (so previews/motion sidecars exist before upload), then
+Order: sync the clock via NTP (if online), sweep *.part staging files a crash
+or power-off left behind (salvaging complete captures), finish any postprocess
+a crash or power-off interrupted (so previews/motion sidecars exist before upload), then
 flush any clips a failed or offline nightly upload left behind, then prune
 storage. The supervisor service starts independently and begins recording
 regardless of network state.
@@ -23,6 +24,9 @@ def run(cfg: Config, *, dry_run: bool = False) -> int:
     log.info("NTP synchronised: %s", synced)
 
     base = storage.select_base_dir(cfg)
+    swept = storage.sweep_partials(base, dry_run=dry_run)
+    if swept:
+        log.info("Swept %d interrupted .part famil(ies)", swept)
     if cfg.postprocess.enabled:
         postprocess.process_pending(cfg, base, dry_run=dry_run)
 

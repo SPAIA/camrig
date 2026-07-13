@@ -51,7 +51,7 @@ log = logging.getLogger("camrig.record")
 PROFILES = ("mjpeg", "ffv1", "raw")
 
 
-@dataclass
+@dataclass(frozen=True)
 class ClipPaths:
     """Resolved output paths for one clip."""
 
@@ -59,9 +59,44 @@ class ClipPaths:
     pts: Path
     meta: Path
 
+    def in_progress(self) -> "ClipPaths":
+        """The ``*.part`` staging names used while a capture is running.
+
+        ``*.part`` files are invisible to iter_clips() and excluded from
+        upload, so a clip only becomes discoverable once finalize_from()
+        renames the finished outputs into place.
+        """
+        return ClipPaths(
+            video=Path(f"{self.video}.part"),
+            pts=Path(f"{self.pts}.part"),
+            meta=Path(f"{self.meta}.part"),
+        )
+
+    def finalize_from(self, partial: "ClipPaths") -> None:
+        """Rename a completed capture's staging files to their final names.
+
+        All outputs must exist before any rename happens, and the video is
+        renamed last, so a clip is never discovered before its pts and
+        metadata sidecars are in place.
+        """
+        pairs = (
+            (partial.pts, self.pts),
+            (partial.meta, self.meta),
+            (partial.video, self.video),
+        )
+        missing = [str(src) for src, _ in pairs if not src.exists()]
+        if missing:
+            raise FileNotFoundError(
+                f"capture finished without outputs: {', '.join(missing)}"
+            )
+        for src, dst in pairs:
+            src.replace(dst)
+
 
 def clip_paths(day_dir: Path, profile: str, started_at: datetime) -> ClipPaths:
-    stamp = started_at.strftime("%Y%m%d_%H%M%S")
+    # Millisecond stamp: a manual session that preempts a scheduled clip can
+    # start within the same second and must not reuse its name.
+    stamp = started_at.strftime("%Y%m%d_%H%M%S_%f")[:-3]
     ext = ".raw" if profile == "raw" else ".mkv"
     video = day_dir / f"clip_{stamp}{ext}"
     return ClipPaths(
@@ -156,13 +191,14 @@ def _build_basler_commands(
             *ffmpeg_in,
             "-c:v", "mjpeg", "-q:v", str(mjpeg_qv(cfg.quality)),
             "-pix_fmt", "yuvj444p",
-            str(paths.video),
+            # Explicit container: the .part staging name hides the .mkv suffix.
+            "-f", "matroska", str(paths.video),
         ]]
     if profile == "ffv1":
         return [producer, [
             *ffmpeg_in,
             "-c:v", "ffv1", "-level", "3", "-pix_fmt", "gray",
-            str(paths.video),
+            "-f", "matroska", str(paths.video),
         ]]
     raise ValueError(f"Unknown capture profile: {profile!r} (expected one of {PROFILES})")
 
@@ -194,7 +230,8 @@ def build_commands(
             "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
             "-f", "mjpeg", "-i", "-",
             "-c", "copy",
-            str(paths.video),
+            # Explicit container: the .part staging name hides the .mkv suffix.
+            "-f", "matroska", str(paths.video),
         ]
         return [rpicam, ffmpeg]
 
@@ -212,7 +249,7 @@ def build_commands(
             "-r", str(cfg.framerate),
             "-i", "-",
             "-c:v", "ffv1", "-level", "3",
-            str(paths.video),
+            "-f", "matroska", str(paths.video),
         ]
         return [rpicam, ffmpeg]
 
@@ -250,13 +287,18 @@ def write_metadata(
     trigger: str,
     started_at: datetime,
     session_id: str | None,
+    clip_name: str | None = None,
     extra: dict | None = None,
 ) -> None:
-    """Write the JSON metadata sidecar for a clip."""
+    """Write the JSON metadata sidecar for a clip.
+
+    When writing to .part staging paths, pass ``clip_name`` so the metadata
+    references the final clip name rather than the staging one.
+    """
     meta = {
         "schema": 1,
         "camrig_version": __version__,
-        "clip": paths.video.name,
+        "clip": clip_name or paths.video.name,
         "trigger": trigger,  # "scheduled" | "triggered"
         "session_id": session_id,
         "started_at_utc": started_at.astimezone(timezone.utc).isoformat(),
@@ -300,15 +342,20 @@ class Recording:
         return self.wait(timeout=timeout)
 
     def wait(self, timeout: float | None = None) -> int:
-        """Wait for the whole pipeline to finish; return last process rc."""
-        rc = 0
+        """Wait for the whole pipeline; return the first non-zero rc, else 0.
+
+        A dead camera producer must not be masked by the consumer exiting
+        cleanly on stdin EOF — that would pass a truncated clip off as good.
+        """
+        returncodes: list[int] = []
         for proc in self._procs:
             try:
                 rc = proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 rc = proc.wait()
-        return rc
+            returncodes.append(rc)
+        return next((rc for rc in returncodes if rc != 0), 0)
 
     def poll(self) -> int | None:
         """Return the consumer exit code if finished, else None."""
@@ -332,8 +379,9 @@ def record_clip(
     """
     started_at = datetime.now().astimezone()
     paths = clip_paths(day_dir, cfg.profile, started_at)
+    partial = paths.in_progress()
     duration_ms = int((duration_seconds or cfg.clip_seconds) * 1000)
-    commands = build_commands(cfg, paths, duration_ms, basler=basler)
+    commands = build_commands(cfg, partial, duration_ms, basler=basler)
 
     log.info("Capture (%s): %s", trigger, describe_commands(commands))
     if dry_run:
@@ -341,11 +389,15 @@ def record_clip(
         return paths
 
     write_metadata(
-        paths, cfg, trigger=trigger, started_at=started_at, session_id=session_id
+        partial, cfg, trigger=trigger, started_at=started_at,
+        session_id=session_id, clip_name=paths.video.name,
     )
-    recording = Recording(commands, paths)
+    recording = Recording(commands, partial)
     recording.start()
     rc = recording.wait()
     if rc != 0:
-        log.error("Capture exited with code %s", rc)
+        raise RuntimeError(
+            f"capture pipeline failed with code {rc}; .part files retained"
+        )
+    paths.finalize_from(partial)
     return paths

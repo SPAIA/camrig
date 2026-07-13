@@ -51,13 +51,17 @@ def _cmd_record(args, cfg) -> int:
         cfg.capture.profile = args.profile
     if args.camera:
         cfg.capture.camera = args.camera
-    record.record_clip(
-        cfg.capture, day_dir,
-        trigger="triggered" if args.triggered else "scheduled",
-        duration_seconds=args.seconds,
-        dry_run=args.dry_run,
-        basler=cfg.basler,
-    )
+    try:
+        record.record_clip(
+            cfg.capture, day_dir,
+            trigger="triggered" if args.triggered else "scheduled",
+            duration_seconds=args.seconds,
+            dry_run=args.dry_run,
+            basler=cfg.basler,
+        )
+    except (RuntimeError, FileNotFoundError) as exc:
+        print(f"capture failed: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

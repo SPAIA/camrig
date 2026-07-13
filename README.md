@@ -120,6 +120,13 @@ starts mid-postprocess always wins the CPU; the ~27 idle minutes per half-hour
 slot are far more than the ~2–4 minutes a clip needs. Half-written outputs use a
 `*.part` name that the uploader excludes.
 
+Capture outputs are staged the same way: a clip records as `*.part` and is only
+renamed to its final name (video last, after the pts/json sidecars) once every
+pipeline stage exits cleanly, so upload and catch-up scans never see a clip
+that is still recording or truncated. Staging files orphaned by a crash or
+power cut are swept at boot — complete families are salvaged into place,
+incomplete ones deleted.
+
 As soon as a clip's sidecars exist it is **uploaded to R2 immediately** and
 marked, making it prune-eligible right away (retention still honours
 `keep_days`/`min_free_gb`) instead of holding the day on disk until the nightly

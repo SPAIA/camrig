@@ -94,13 +94,15 @@ class Supervisor:
             started_at = datetime.now().astimezone()
             day_dir = storage.day_dir(self.base, started_at.date())
             paths = record.clip_paths(day_dir, self.cfg.capture.profile, started_at)
+            partial = paths.in_progress()
             duration = duration_seconds or self.cfg.capture.clip_seconds
             commands = record.build_commands(
-                self.cfg.capture, paths, int(duration * 1000), basler=self.cfg.basler
+                self.cfg.capture, partial, int(duration * 1000), basler=self.cfg.basler
             )
             record.write_metadata(
-                paths, self.cfg.capture,
+                partial, self.cfg.capture,
                 trigger=trigger, started_at=started_at, session_id=session_id,
+                clip_name=paths.video.name,
             )
 
             self._active = SessionState(
@@ -109,7 +111,7 @@ class Supervisor:
                 started_at_utc=started_at.astimezone(timezone.utc).isoformat(),
                 clip_name=paths.video.name,
             )
-            self._recording = record.Recording(commands, paths)
+            self._recording = record.Recording(commands, partial)
             log.info("Starting %s capture: %s", trigger, record.describe_commands(commands))
             self._recording.start()
             await self._emit({
@@ -122,6 +124,12 @@ class Supervisor:
 
             # Wait for the pipeline to finish in a worker thread.
             rc = await asyncio.to_thread(self._recording.wait)
+            if rc == 0:
+                try:
+                    paths.finalize_from(partial)
+                except FileNotFoundError:
+                    log.exception("Capture exited cleanly but outputs are missing")
+                    rc = 1
             ended_at = _utcnow_iso()
             log.info("Capture finished rc=%s clip=%s", rc, paths.video.name)
             session = self._active
@@ -180,6 +188,8 @@ class Supervisor:
 
     async def start_session(self, session_id: str) -> dict:
         """Begin a human-triggered recording. Preempts a scheduled clip."""
+        if not session_id:
+            return {"type": "error", "code": "invalid_session_id", "session_id": session_id}
         if self._manual_active:
             return {"type": "error", "code": "already_recording", "session_id": session_id}
 
@@ -212,10 +222,20 @@ class Supervisor:
         await self.stop_session(session_id)
 
     async def stop_session(self, session_id: str) -> dict:
-        if self._recording is not None and self._manual_active:
-            await asyncio.to_thread(self._recording.stop)
-            return {"type": "accepted", "session_id": session_id}
-        return {"type": "error", "code": "not_recording", "session_id": session_id}
+        active = self._active
+        if self._recording is None or not self._manual_active or active is None:
+            return {"type": "error", "code": "not_recording", "session_id": session_id}
+        # Only the owning session may stop the recording; a stale stop from a
+        # previous session must not cut a newer one short.
+        if active.session_id != session_id:
+            return {
+                "type": "error",
+                "code": "session_mismatch",
+                "session_id": session_id,
+                "active_session_id": active.session_id,
+            }
+        await asyncio.to_thread(self._recording.stop)
+        return {"type": "accepted", "session_id": session_id}
 
     # ----- scheduler ----------------------------------------------------
 

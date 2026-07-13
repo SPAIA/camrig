@@ -23,6 +23,11 @@ CLIP_SUFFIXES = (".mkv", ".raw")
 SIDECAR_SUFFIXES = (".pts", ".json", ".preview.mp4", ".motion.json")
 # Marker written next to a clip once rclone has confirmed it uploaded.
 UPLOADED_MARKER = ".uploaded"
+# In-progress staging suffix (capture and postprocess outputs).
+PART_SUFFIX = ".part"
+# A .part family untouched for this long is orphaned: an active capture or
+# postprocess keeps its staging files' mtimes fresh.
+PARTIAL_GRACE_SECONDS = 600
 
 
 def _is_writable_mount(path: Path) -> bool:
@@ -98,6 +103,69 @@ def iter_clips(base: Path):
     ]
     clips.sort(key=lambda p: p.stat().st_mtime)
     return clips
+
+
+def sweep_partials(
+    base: Path,
+    *,
+    grace_seconds: int = PARTIAL_GRACE_SECONDS,
+    dry_run: bool = False,
+) -> int:
+    """Recover or remove stale ``*.part`` staging files. Returns families touched.
+
+    A crash or power cut mid-capture leaves a clip staged as ``.part`` —
+    invisible to upload, postprocess and prune, so it would leak disk forever.
+    A family with video, pts and json all present is salvaged by renaming into
+    place (a truncated intra-only clip is still analysable); incomplete
+    leftovers (including orphaned postprocess outputs, which regenerate) are
+    deleted. Families touched within ``grace_seconds`` are skipped: they may
+    belong to a capture or postprocess that is still running.
+    """
+    families: dict[Path, list[Path]] = {}
+    for part in base.rglob(f"*{PART_SUFFIX}"):
+        if not part.is_file():
+            continue
+        final = part.with_name(part.name[: -len(PART_SUFFIX)])
+        # Group by clip stem: clip.mkv/.pts/.json share a key; postprocess
+        # outputs (clip.preview.mp4, clip.motion.json) form their own groups.
+        families.setdefault(final.with_suffix(""), []).append(part)
+
+    now = time.time()
+    touched = 0
+    for stem, parts in sorted(families.items()):
+        if now - max(p.stat().st_mtime for p in parts) < grace_seconds:
+            log.info("Leaving %s.*%s: recently written", stem.name, PART_SUFFIX)
+            continue
+        # Keyed by the *final* suffix (.mkv/.pts/.json once .part is stripped).
+        by_suffix: dict[str, tuple[Path, Path]] = {}
+        for part in parts:
+            final = part.with_name(part.name[: -len(PART_SUFFIX)])
+            by_suffix[final.suffix] = (part, final)
+        video = next(
+            (by_suffix[s] for s in CLIP_SUFFIXES if s in by_suffix), None
+        )
+        complete = video and ".pts" in by_suffix and ".json" in by_suffix
+        if complete:
+            if dry_run:
+                print(f"would salvage {stem.name}.*")
+            else:
+                # Sidecars first, video last: never discoverable half-renamed.
+                for suffix in (".pts", ".json", *CLIP_SUFFIXES):
+                    if suffix in by_suffix:
+                        part, final = by_suffix[suffix]
+                        part.replace(final)
+                log.warning("Salvaged interrupted clip %s", video[1].name)
+        else:
+            for part in parts:
+                if dry_run:
+                    print(f"would delete {part}")
+                else:
+                    part.unlink(missing_ok=True)
+            log.warning(
+                "Deleted %d incomplete staging file(s) for %s", len(parts), stem.name
+            )
+        touched += 1
+    return touched
 
 
 def prune(cfg: Config, base: Path) -> int:
