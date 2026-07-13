@@ -47,7 +47,7 @@ max_session_seconds = 600
 
 [basler]
 # Basler ace 2 GigE transport/device settings (used when capture.camera = "basler").
-# Requires pypylon in the venv: WITH_BASLER=1 ./setup/install.sh, and the GigE
+# Requires pypylon in the venv: sudo WITH_BASLER=1 ./setup/install.sh, and the GigE
 # network setup in docs/basler-gige.md. List reachable cameras with:
 #   /opt/camrig/venv/bin/python -m camrig.basler --list
 

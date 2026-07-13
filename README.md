@@ -60,7 +60,8 @@ metadata sidecar, postprocess, upload, and `camrig focus --camera basler` for
 lens focusing — so clips from both cameras flow through one pipeline and are
 distinguished by the `camera`/`sensor` fields in their `.json`.
 
-Install with `WITH_BASLER=1 sudo ./setup/install.sh`; the `[basler]` config
+Install with `sudo WITH_BASLER=1 ./setup/install.sh` (the assignment must come
+after `sudo`, which strips preceding env vars); the `[basler]` config
 section selects the device and tunes the GigE transport. **Wiring, IP setup,
 and bandwidth limits (GigE caps Mono8 at ~115 MB/s ≈ width×height×fps) are in
 [`docs/basler-gige.md`](docs/basler-gige.md).** The Pi's internet then moves to

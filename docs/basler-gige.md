@@ -109,7 +109,9 @@ sudo sysctl -w net.core.rmem_max=16777216 net.core.rmem_default=16777216
 ## Install
 
 ```bash
-WITH_BASLER=1 sudo CAM_USER=spaia ./setup/install.sh
+# assignments must come AFTER sudo — sudo's env_reset strips variables set
+# before it, and the script would silently skip pypylon
+sudo WITH_BASLER=1 CAM_USER=spaia ./setup/install.sh
 ```
 
 This adds `pypylon` (which bundles the pylon runtime — no separate SDK needed

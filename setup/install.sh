@@ -34,9 +34,13 @@ python3 -m venv "$PREFIX/venv"
 "$PREFIX/venv/bin/pip" install --upgrade pip
 # WITH_BASLER=1 adds pypylon for the Basler ace 2 GigE backend
 # (capture.camera = "basler"; network setup in docs/basler-gige.md).
+# NB: pass it AFTER sudo (sudo WITH_BASLER=1 ./setup/install.sh) — sudo's
+# env_reset strips assignments that come before it.
 if [[ "${WITH_BASLER:-0}" == "1" ]]; then
+  echo "    (with Basler backend: installing camrig[basler] + pypylon)"
   "$PREFIX/venv/bin/pip" install "$REPO_DIR[basler]"
 else
+  echo "    (rpicam only; sudo WITH_BASLER=1 ... adds the Basler backend)"
   "$PREFIX/venv/bin/pip" install "$REPO_DIR"
 fi
 
