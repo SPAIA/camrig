@@ -228,3 +228,8 @@ during setup or pause `cam-supervisor` first.
   interface. A USB3 dart would reuse the same module (pypylon is
   transport-agnostic; drop the GigE-specific `[basler]` keys).
 - **Live preview** in the page via a libcamera low-res second stream.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).
+Copyright 2026 Playstate UG (trading as SPAIA).

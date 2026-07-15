@@ -7,6 +7,7 @@ name = "camrig"
 version = "0.1.0"
 description = "Insect-tracking capture rig for Raspberry Pi 5 + Global Shutter camera"
 readme = "README.md"
+license = {text = "Apache-2.0"}
 requires-python = ">=3.11"
 dependencies = [
     "websockets>=12.0",

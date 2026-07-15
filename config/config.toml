@@ -91,8 +91,8 @@ nice = 10
 
 [schedule]
 # Active recording window (local time). Outside it the Pi shuts down.
-start_hour = 5
-stop_hour = 22
+start_hour = 0
+stop_hour = 24
 # Scheduled clip cadence in minutes (on :00 and :30 within the window).
 interval_min = 30
 
