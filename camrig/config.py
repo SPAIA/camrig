@@ -60,6 +60,7 @@ class PostprocessConfig:
     preview_fps: int = 30
     preview_crf: int = 28
     motion_width: int = 728
+    motion_detector: str = "blob-track-v1"
     motion_threshold: int = 12
     nice: int = 10
 

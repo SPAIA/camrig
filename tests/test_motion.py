@@ -11,7 +11,13 @@ import io
 import numpy as np
 import pytest
 
-from camrig.motion import analyse
+from camrig.motion import (
+    BLOB_TRACK_V1,
+    DEFAULT_DETECTOR,
+    analyse,
+    analyse_blob_track_v1,
+    available_detectors,
+)
 
 W, H = 96, 64
 BG = 20
@@ -43,6 +49,7 @@ def test_frame_alignment_and_metadata():
     assert [w["f"] for w in result["windows"]] == [0, 6, 12]
     assert result["windows"][-1]["n_frames"] == 1
     assert result["schema"] == 2
+    assert result["analysis"] == BLOB_TRACK_V1
 
 
 def test_static_scene_has_no_blobs():
@@ -132,3 +139,21 @@ def test_slow_crawler_visible_via_background_subtraction():
     result = run(frames)
     populated = [w for w in result["windows"] if w["blobs"]]
     assert len(populated) >= 6, "slow mover should still produce blobs"
+
+
+def test_detector_registry_routes_to_immutable_v1_entry_point():
+    frames = [blank(), with_dot(10, 20), with_dot(12, 20)]
+    payload = b"".join(f.tobytes() for f in frames)
+
+    direct = analyse_blob_track_v1(io.BytesIO(payload), W, H, threshold=12)
+    routed = analyse(
+        io.BytesIO(payload), W, H, threshold=12, detector=DEFAULT_DETECTOR
+    )
+
+    assert available_detectors() == (BLOB_TRACK_V1,)
+    assert routed == direct
+
+
+def test_unknown_detector_is_rejected_before_processing():
+    with pytest.raises(ValueError, match="Unknown detector"):
+        run([blank()], detector="blob-track-v999")

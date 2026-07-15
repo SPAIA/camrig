@@ -84,6 +84,10 @@ preview_crf = 28
 # Motion-analysis frame width (px, grayscale); height follows the aspect ratio.
 # Always runs at the source frame rate so metric index i aligns with .pts line i.
 motion_width = 728
+# Versioned motion detector implementation. Existing versions are immutable;
+# add a new version for changed behaviour so retained MKVs can be replayed and
+# compared against the exact detector that produced each sidecar.
+motion_detector = "blob-track-v1"
 # Per-pixel difference (0-255) above which a pixel counts as "active" motion.
 motion_threshold = 12
 # Unix niceness for postprocess jobs, so an in-progress capture always wins the CPU.

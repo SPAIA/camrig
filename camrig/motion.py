@@ -48,12 +48,17 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Callable
 
 import numpy as np
 
 SCHEMA = 2
-ANALYSIS = "blob-track-v1"
+BLOB_TRACK_V1 = "blob-track-v1"
+DEFAULT_DETECTOR = BLOB_TRACK_V1
+# Backwards-compatible alias for code that imported the previous constant.
+ANALYSIS = BLOB_TRACK_V1
+
+Detector = Callable[..., dict]
 
 # Active pixels a cell needs before it participates in blob labelling. Together
 # with min_hits this is the noise floor: a blob must be >= CELL_MIN_PX pixels
@@ -172,11 +177,16 @@ def _link_tracks(windows: list[dict], max_dist: float) -> list[dict]:
     return tracks
 
 
-def analyse(stream: BinaryIO, width: int, height: int, threshold: int,
-            window: int = 6, min_hits: int = 2, cell: int = 8,
-            bg_alpha: float = 0.05, min_area: int = 4,
-            max_link_dist: float = 80.0) -> dict:
-    """Consume raw gray8 frames from stream; return blobs, tracks and metrics."""
+def analyse_blob_track_v1(stream: BinaryIO, width: int, height: int, threshold: int,
+                          window: int = 6, min_hits: int = 2, cell: int = 8,
+                          bg_alpha: float = 0.05, min_area: int = 4,
+                          max_link_dist: float = 80.0) -> dict:
+    """Version 1 EMA-background blob detector and window-level track linker.
+
+    Versioned detector functions are immutable experiment definitions. Add a new
+    function and registry entry for changed behaviour instead of editing this one
+    after field data has been produced with it.
+    """
     frame_bytes = width * height
     active_fraction: list[float] = []
     windows: list[dict] = []
@@ -231,7 +241,7 @@ def analyse(stream: BinaryIO, width: int, height: int, threshold: int,
 
     return {
         "schema": SCHEMA,
-        "analysis": ANALYSIS,
+        "analysis": BLOB_TRACK_V1,
         "width": width,
         "height": height,
         "params": {
@@ -246,8 +256,41 @@ def analyse(stream: BinaryIO, width: int, height: int, threshold: int,
     }
 
 
+DETECTORS: dict[str, Detector] = {
+    BLOB_TRACK_V1: analyse_blob_track_v1,
+}
+
+
+def available_detectors() -> tuple[str, ...]:
+    """Return stable detector IDs accepted by the API and CLI."""
+    return tuple(sorted(DETECTORS))
+
+
+def analyse(stream: BinaryIO, width: int, height: int, threshold: int,
+            window: int = 6, min_hits: int = 2, cell: int = 8,
+            bg_alpha: float = 0.05, min_area: int = 4,
+            max_link_dist: float = 80.0,
+            detector: str = DEFAULT_DETECTOR) -> dict:
+    """Run a named, versioned detector over a raw gray8 frame stream."""
+    try:
+        detector_fn = DETECTORS[detector]
+    except KeyError:
+        choices = ", ".join(available_detectors())
+        raise ValueError(
+            f"Unknown detector {detector!r}; available detectors: {choices}"
+        ) from None
+    return detector_fn(
+        stream, width, height, threshold, window=window, min_hits=min_hits,
+        cell=cell, bg_alpha=bg_alpha, min_area=min_area,
+        max_link_dist=max_link_dist,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--detector", choices=available_detectors(),
+                        default=DEFAULT_DETECTOR,
+                        help="versioned detector implementation (default %(default)s)")
     parser.add_argument("--width", type=int, required=True)
     parser.add_argument("--height", type=int, required=True)
     parser.add_argument("--threshold", type=int, default=12,
@@ -271,7 +314,7 @@ def main(argv: list[str] | None = None) -> int:
     result = analyse(sys.stdin.buffer, args.width, args.height, args.threshold,
                      window=args.window, min_hits=args.min_hits, cell=args.cell,
                      bg_alpha=args.bg_alpha, min_area=args.min_area,
-                     max_link_dist=args.max_link_dist)
+                     max_link_dist=args.max_link_dist, detector=args.detector)
     if args.clip:
         result = {"clip": args.clip, **result}
     Path(args.output).write_text(json.dumps(result), encoding="utf-8")

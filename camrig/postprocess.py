@@ -7,10 +7,9 @@ full-res MJPEG once and feeds two consumers from that shared decode:
 * ``<clip>.preview.mp4`` — downscaled colour H.264 preview for quick scrubbing.
   Inter-frame compression artefacts don't matter here; analysis always uses the
   original intra-only clip.
-* ``<clip>.motion.json`` — per-frame metrics from ``camrig.motion`` (currently a
-  placeholder frame-differ; that module is the designated place to grow real
-  motion-trail tracking). Motion frames stay at the source frame rate so metric
-  index i aligns with ``.pts`` line i.
+* ``<clip>.motion.json`` — per-frame blobs and tracks from the configured,
+  versioned ``camrig.motion`` detector. Motion frames stay at the source frame
+  rate, so metric index i aligns with ``.pts`` line i.
 
 Everything runs under ``nice`` so a capture that starts mid-postprocess always
 wins the CPU. Outputs are written as ``*.part`` and renamed into place on
@@ -92,6 +91,7 @@ def build_commands(cfg: Config, video: Path) -> list[list[str]]:
     ]
     motion = [
         *nice, sys.executable, "-m", "camrig.motion",
+        "--detector", pp.motion_detector,
         "--width", str(motion_w), "--height", str(motion_h),
         "--threshold", str(pp.motion_threshold),
         "--clip", video.name,
