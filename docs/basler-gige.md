@@ -86,6 +86,55 @@ software (ffmpeg) sustains full-rate on the Pi 5, but keep an eye on
 `camrig record --seconds 10` CPU usage at your chosen resolution; the `ffv1`
 profile will likely not keep up at full rate (same caveat as the IMX296).
 
+## This rig's camera: a2A2448-105g5c (colour, 5GBASE-T)
+
+The deployed unit is an **a2A2448-105g5c** — IMX548, 2448×2048, 105 fps at
+full resolution, **colour** (so mono-vs-Bayer comparisons need the `m`
+variant; this one compares sensor/optics only), with a 5GBASE-T port that
+negotiates down to whatever the Pi side offers. The sensor gets faster as the
+ROI height shrinks, so below full frame the *link* is always the constraint:
+`fps_max ≈ link_bytes_per_s / (width × height)` for Mono8.
+
+On the built-in 1 GbE port (~110 MB/s with headroom):
+
+| Use                        | ROI       | max fps |
+| -------------------------- | --------- | ------- |
+| Full field of view         | 2448×2048 | ~21     |
+| Full-width flight corridor | 2448×1200 | ~37     |
+| Balanced                   | 1600×1200 | ~57     |
+| IMX296 comparison twin     | 1456×1088 | 60–69   |
+| Max temporal resolution    | 1200×864  | **105** (sensor cap) |
+
+Verify each step up with a 10 s clip: flat `.pts` deltas = keeping up;
+doubled deltas or `grab failed` in stderr = link or encode saturated.
+
+### 2.5 GbE upgrade (~€20): full sensor at ~50 fps
+
+The camera speaks NBASE-T (5G/2.5G/1G), so a **USB 3.0 → 2.5GbE adapter on a
+Realtek RTL8156/RTL8156B** (UGREEN, Cable Matters, Plugable USBC-E2500, …)
+plugged into a **blue USB 3 port** gives a 2.5G link ≈ 280 MB/s payload —
+**2448×2048 @ ~50 fps**. Works out of the box on Pi OS (`r8152` driver).
+Checklist:
+
+- Not every cheap USB dongle qualifies: `ethtool ethX` must list
+  `2500baseT/Full` under supported link modes (`lsusb` ID `0bda:8156` is the
+  right chip). A 1GbE adapter gains nothing over the built-in port.
+- The camera moves to the adapter's interface (usually `eth1`): re-point the
+  nmcli profile — `sudo nmcli con mod basler connection.interface-name eth1
+  ethernet.mtu 9000 && sudo nmcli con up basler`.
+- At >200 MB/s use jumbo frames + `packet_size = 8192` and the rmem sysctl
+  below; past that the Pi's software MJPEG encode and clip sizes become the
+  limits, not the wire (`raw` profile to NVMe for short bursts).
+
+### Colour fidelity bursts
+
+`Mono8` is right for the daily tracking pipeline. For occasional colour
+reference data set `pixel_format = "BayerRG8"` **with `profile = "ffv1"`**:
+same bandwidth as Mono8, and the lossless gray FFV1 path preserves the Bayer
+mosaic bit-exactly for offline demosaicing. Never pair Bayer with `mjpeg` —
+lossy compression of the mosaic wrecks demosaicing. FFV1 encode speed limits
+this to short, lower-fps bursts.
+
 ## Packet size / dropped frames
 
 Two `[basler]` knobs, in order of preference:

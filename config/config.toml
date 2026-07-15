@@ -110,7 +110,7 @@ min_free_gb = 5
 # NOTE: with upload.full_res = false the full-res clip itself never uploads —
 # the clip counts as uploaded once its sidecars land, so the full-res copy is
 # deleted immediately and there is no window to pull it off the device.
-delete_after_upload = true
+delete_after_upload = false
 
 [upload]
 enabled = true
