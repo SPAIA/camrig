@@ -84,14 +84,38 @@ preview_crf = 28
 # Motion-analysis frame width (px, grayscale); height follows the aspect ratio.
 # Always runs at the source frame rate so metric index i aligns with .pts line i.
 motion_width = 728
-# Versioned motion detector implementation. Existing versions are immutable;
-# add a new version for changed behaviour so retained MKVs can be replayed and
-# compared against the exact detector that produced each sidecar.
+# Versioned motion detector implementation. Behaviour is code x knobs: this
+# names the code, the table below supplies the knobs, and both are recorded in
+# every sidecar (as `analysis` and `params`). Retuning a knob is not a new
+# version — add one only for a genuine algorithm change, so retained MKVs can be
+# replayed against the exact detector that produced each sidecar.
 motion_detector = "blob-track-v1"
-# Per-pixel difference (0-255) above which a pixel counts as "active" motion.
-motion_threshold = 12
 # Unix niceness for postprocess jobs, so an in-progress capture always wins the CPU.
 nice = 10
+
+# Knobs for the selected detector. Every knob may be omitted — anything absent
+# uses the detector's own default, so deleting this whole table is valid and
+# means "stock". Unknown names and bad types are rejected at config load rather
+# than after a clip has been decoded. `camrig postprocess --force` rebuilds
+# sidecars after a change; run `python -m camrig.motion --help` for the knob
+# list of every registered detector.
+[postprocess.motion_params."blob-track-v1"]
+# Per-pixel difference (0-255) above which a pixel counts as "active" motion.
+threshold = 12
+# Frames accumulated per blob-extraction window (6 ≈ 100 ms at 60 fps).
+window = 6
+# Frames a pixel must be hot within a window; 2 drops single-frame sensor noise.
+min_hits = 2
+# Cell size (px) for blob labelling; also the centroid quantisation, so it
+# bounds trail precision for the smallest targets.
+cell = 8
+# EMA background adaption rate per frame. Lower = steadier background but
+# slower to absorb lighting changes; higher = a paused insect bakes in sooner.
+bg_alpha = 0.05
+# Minimum blob area in active pixels.
+min_area = 4
+# Max centroid jump (px) to link blobs across consecutive windows.
+max_link_dist = 80.0
 
 [schedule]
 # Active recording window (local time). Outside it the Pi shuts down.

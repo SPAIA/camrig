@@ -195,7 +195,11 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
-    cfg = load_config(args.config)
+    try:
+        cfg = load_config(args.config)
+    except ValueError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 2
     return args.func(args, cfg)
 
 

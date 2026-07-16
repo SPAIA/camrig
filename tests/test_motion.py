@@ -17,6 +17,8 @@ from camrig.motion import (
     analyse,
     analyse_blob_track_v1,
     available_detectors,
+    resolve_params,
+    tunable_params,
 )
 
 W, H = 96, 64
@@ -151,9 +153,56 @@ def test_detector_registry_routes_to_immutable_v1_entry_point():
     )
 
     assert available_detectors() == (BLOB_TRACK_V1,)
-    assert routed == direct
+    # Routing adds the resolved knobs; the analysis itself is untouched.
+    assert {k: v for k, v in routed.items() if k != "params"} == direct
+    assert routed["params"] == tunable_params(BLOB_TRACK_V1)
 
 
 def test_unknown_detector_is_rejected_before_processing():
     with pytest.raises(ValueError, match="Unknown detector"):
         run([blank()], detector="blob-track-v999")
+
+
+# --- knob resolution -----------------------------------------------------
+
+def test_sidecar_records_resolved_knobs_not_just_overrides():
+    # The sidecar must describe the whole run, so an untouched knob is recorded
+    # at its default rather than omitted.
+    result = run([blank() for _ in range(2)], bg_alpha=0.2)
+
+    assert result["params"]["bg_alpha"] == 0.2
+    assert result["params"]["cell"] == 8
+    assert set(result["params"]) == set(tunable_params("blob-track-v1"))
+
+
+def test_analysis_field_names_the_detector():
+    assert run([blank() for _ in range(2)])["analysis"] == "blob-track-v1"
+
+
+def test_unknown_knob_is_rejected():
+    with pytest.raises(ValueError, match="bg_alpah"):
+        analyse(io.BytesIO(b""), W, H, bg_alpah=0.02)
+
+
+def test_knobs_are_coerced_to_the_default_type():
+    # TOML and the CLI both hand over ints/strings for a float knob.
+    assert resolve_params("blob-track-v1", {"max_link_dist": 80})["max_link_dist"] == 80.0
+    assert resolve_params("blob-track-v1", {"bg_alpha": "0.02"})["bg_alpha"] == 0.02
+    assert resolve_params("blob-track-v1", {"cell": "4"})["cell"] == 4
+
+
+def test_tunable_params_excludes_frame_stream_arguments():
+    knobs = tunable_params("blob-track-v1")
+
+    assert not {"stream", "width", "height"} & set(knobs)
+    assert knobs["threshold"] == 12
+
+
+def test_knob_actually_changes_behaviour():
+    # A threshold above the dot's contrast should suppress what it detects at
+    # the default, proving the knob reaches the detector rather than being
+    # recorded and ignored.
+    frames = [with_dot(4 + 2 * i, 30, value=60) for i in range(24)]
+
+    assert any(w["blobs"] for w in run(frames)["windows"])
+    assert not any(w["blobs"] for w in run(frames, threshold=200)["windows"])

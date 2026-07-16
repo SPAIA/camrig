@@ -14,7 +14,7 @@ What it does:
 - **Syncs the clock via NTP** at boot (when online).
 - **Post-processes each clip on-device** in the idle gap between captures: a
   low-res **H.264 preview** for scrubbing plus a **per-frame motion-metrics
-  sidecar** (placeholder analysis, the seed of the motion-trail tracker).
+  sidecar** (blob detection + track linking; see Motion Detection below).
 - **Uploads each clip to Cloudflare R2 as soon as its sidecars are ready** (via
   rclone), so device space is reclaimed early; nightly + boot catch-up uploads
   cover anything recorded while offline.
@@ -140,14 +140,27 @@ Two `[upload]` switches control this behaviour:
   the full-res video never leaves the device and retention prunes it after
   `keep_days`, so pull any clip worth keeping before then.
 
-**The motion analysis is a placeholder** (frame differencing: per-frame
-`mean_abs_diff` and `active_fraction`). Iterate toward motion-trail tracking in
-[`camrig/motion.py`](camrig/motion.py) — it reads raw gray8 frames on stdin at
-the source frame rate (metric index *i* aligns with `.pts` line *i*) and writes
-the JSON sidecar; keep that contract and nothing else needs to change. After
-changing it, rebuild sidecars with `camrig postprocess --force`. The preview is
-for humans only — analysis always reads the original intra-only clip, so H.264
-artefacts in the preview don't matter.
+**Motion Detection**
+The current motion detector is `blob-track-v1`: EMA background subtraction,
+windowed blob extraction, cell-grid connected components, and track linking.
+It reads raw gray8 frames on stdin at the source frame rate, so metric index
+*i* aligns with `.pts` line *i*, and writes the JSON sidecar.
+
+Detector behaviour is **code × knobs**, and every sidecar records both:
+`analysis` names the implementation, `params` the fully-resolved tuning. So the
+two are versioned differently. Detectors are explicitly versioned and selected
+with `postprocess.motion_detector`; a detector's knobs live in
+`[postprocess.motion_params."<detector>"]`, are validated at config load, and
+may be swept freely (`--param NAME=VALUE`, or
+`python -m camrig.motion --help` for the knob list). Retuning a knob is *not* a
+new version. Changed behaviour is added as a new version, and once a version has
+written a sidecar worth keeping it stays immutable — so retained MKVs can be
+replayed through several implementations without changing what an old sidecar
+means. See [`docs/detector-versioning.md`](docs/detector-versioning.md). Rebuild
+the active sidecar with `camrig postprocess --force`.
+
+The preview is for humans only — analysis always reads the original intra-only
+clip, so H.264 artefacts in the preview don't matter.
 
 ## Remote trigger (Cloudflare)
 

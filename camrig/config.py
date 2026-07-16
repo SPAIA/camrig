@@ -61,8 +61,15 @@ class PostprocessConfig:
     preview_crf: int = 28
     motion_width: int = 728
     motion_detector: str = "blob-track-v1"
-    motion_threshold: int = 12
+    # Detector knobs, keyed by detector id: {"blob-track-v1": {"bg_alpha": 0.02}}.
+    # Omitted knobs fall back to the detector's own defaults, so {} means stock.
+    # Validated at load against the target detector's signature.
+    motion_params: dict[str, dict[str, Any]] = field(default_factory=dict)
     nice: int = 10
+
+    def active_motion_params(self) -> dict[str, Any]:
+        """Configured knob overrides for the selected detector."""
+        return self.motion_params.get(self.motion_detector, {})
 
 
 @dataclass
@@ -135,8 +142,38 @@ def _apply_section(section_obj: Any, data: dict[str, Any]) -> None:
             setattr(section_obj, key, value)
 
 
+def _validate_postprocess(pp: PostprocessConfig, raw: dict[str, Any]) -> None:
+    """Reject an unusable motion detector/knob set before any clip is decoded.
+
+    Unknown keys are ignored everywhere else, but a mistyped detector or knob
+    would otherwise surface only after ffmpeg had decoded a whole clip, once per
+    clip, forever — and the retry it triggers can never succeed.
+    """
+    # motion_threshold moved into [postprocess.motion_params.<detector>] as
+    # `threshold`. Ignoring it silently would quietly revert a tuned value.
+    if "motion_threshold" in raw.get("postprocess", {}):
+        raise ValueError(
+            "[postprocess] motion_threshold has moved: set it as `threshold` "
+            f'under [postprocess.motion_params."{pp.motion_detector}"] instead.'
+        )
+
+    from . import motion  # local: keeps numpy off the import path of every CLI
+
+    motion.detector_fn(pp.motion_detector)  # raises naming the alternatives
+    for name, params in pp.motion_params.items():
+        if not isinstance(params, dict):
+            raise ValueError(
+                f"[postprocess.motion_params.{name}] must be a table of knobs"
+            )
+        motion.detector_fn(name)
+        motion.resolve_params(name, params)
+
+
 def load_config(path: str | os.PathLike[str] | None = None) -> Config:
-    """Load configuration, falling back to defaults for any missing file/keys."""
+    """Load configuration, falling back to defaults for any missing file/keys.
+
+    Raises ValueError if the motion detector or its knobs are unusable.
+    """
     cfg = Config()
     config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
     try:
@@ -147,4 +184,5 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         section_obj = getattr(cfg, section_name, None)
         if is_dataclass(section_obj) and isinstance(section_data, dict):
             _apply_section(section_obj, section_data)
+    _validate_postprocess(cfg.postprocess, raw)
     return cfg

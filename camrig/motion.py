@@ -23,6 +23,12 @@ The analysis (``blob-track-v1``):
    are the plant discriminators: insects travel through fresh cells, swaying
    vegetation oscillates in place over the same cells for minutes.
 
+Behaviour is *code x knobs*: the detector id names the implementation, and its
+tuning knobs are supplied by the caller. Both are recorded in every sidecar
+(``analysis`` and ``params``), so that pair identifies a run exactly. Knobs are
+a detector's defaulted parameters — vary them freely with ``--param``; add a
+new detector version only for a genuine algorithm change.
+
 Keep this contract stable while iterating on the analysis:
 
 * stdin — raw 8-bit grayscale frames, ``width * height`` bytes each, at the
@@ -32,10 +38,20 @@ Keep this contract stable while iterating on the analysis:
   so blob times resolve the same way.
 * ``--output`` — path of the JSON sidecar to write.
 
-Usable standalone for experimentation on any clip:
+Usable standalone for experimentation on any clip (``--help`` lists every
+detector's knobs and defaults):
 
     ffmpeg -i clip.mkv -vf scale=728:544,format=gray -f rawvideo - |
         python3 -m camrig.motion --width 728 --height 544 -o clip.motion.json
+
+Sweeping a knob over a retained clip, writing each result to its own file so
+the runs can be compared offline:
+
+    for a in 0.01 0.05 0.2; do
+        ffmpeg -i clip.mkv -vf scale=728:544,format=gray -f rawvideo - |
+            python3 -m camrig.motion --width 728 --height 544 \
+                --param bg_alpha=$a -o clip.motion.bg$a.json
+    done
 
 After changing the analysis, regenerate existing sidecars with
 ``camrig postprocess --force``.
@@ -44,20 +60,22 @@ After changing the analysis, regenerate existing sidecars with
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import math
 import sys
 from pathlib import Path
-from typing import BinaryIO, Callable
+from typing import Any, BinaryIO, Callable
 
 import numpy as np
 
 SCHEMA = 2
 BLOB_TRACK_V1 = "blob-track-v1"
 DEFAULT_DETECTOR = BLOB_TRACK_V1
-# Backwards-compatible alias for code that imported the previous constant.
-ANALYSIS = BLOB_TRACK_V1
 
+# Deliberately loose: every detector takes (stream, width, height), but its
+# knobs are its own. resolve_params() validates the knobs against the target's
+# signature, so the looseness here costs no safety.
 Detector = Callable[..., dict]
 
 # Active pixels a cell needs before it participates in blob labelling. Together
@@ -177,15 +195,17 @@ def _link_tracks(windows: list[dict], max_dist: float) -> list[dict]:
     return tracks
 
 
-def analyse_blob_track_v1(stream: BinaryIO, width: int, height: int, threshold: int,
-                          window: int = 6, min_hits: int = 2, cell: int = 8,
-                          bg_alpha: float = 0.05, min_area: int = 4,
+def analyse_blob_track_v1(stream: BinaryIO, width: int, height: int,
+                          threshold: int = 12, window: int = 6, min_hits: int = 2,
+                          cell: int = 8, bg_alpha: float = 0.05, min_area: int = 4,
                           max_link_dist: float = 80.0) -> dict:
     """Version 1 EMA-background blob detector and window-level track linker.
 
-    Versioned detector functions are immutable experiment definitions. Add a new
-    function and registry entry for changed behaviour instead of editing this one
-    after field data has been produced with it.
+    The defaulted parameters are this detector's knobs: their defaults here are
+    the single source of truth, and ``analyse`` resolves caller overrides against
+    them. Retuning a knob is not a new version — only an algorithm change is.
+    Once field data exists that you intend to keep, treat this body as immutable
+    and add a new function plus ``DETECTORS`` entry instead of editing it.
     """
     frame_bytes = width * height
     active_fraction: list[float] = []
@@ -244,11 +264,6 @@ def analyse_blob_track_v1(stream: BinaryIO, width: int, height: int, threshold: 
         "analysis": BLOB_TRACK_V1,
         "width": width,
         "height": height,
-        "params": {
-            "threshold": threshold, "window": window, "min_hits": min_hits,
-            "cell": cell, "bg_alpha": bg_alpha, "min_area": min_area,
-            "max_link_dist": max_link_dist,
-        },
         "frame_count": len(active_fraction),
         "active_fraction": active_fraction,
         "windows": windows,
@@ -266,55 +281,128 @@ def available_detectors() -> tuple[str, ...]:
     return tuple(sorted(DETECTORS))
 
 
-def analyse(stream: BinaryIO, width: int, height: int, threshold: int,
-            window: int = 6, min_hits: int = 2, cell: int = 8,
-            bg_alpha: float = 0.05, min_area: int = 4,
-            max_link_dist: float = 80.0,
-            detector: str = DEFAULT_DETECTOR) -> dict:
-    """Run a named, versioned detector over a raw gray8 frame stream."""
+def detector_fn(detector: str) -> Detector:
+    """Look up a detector by ID, or raise ValueError naming the alternatives."""
     try:
-        detector_fn = DETECTORS[detector]
+        return DETECTORS[detector]
     except KeyError:
         choices = ", ".join(available_detectors())
         raise ValueError(
             f"Unknown detector {detector!r}; available detectors: {choices}"
         ) from None
-    return detector_fn(
-        stream, width, height, threshold, window=window, min_hits=min_hits,
-        cell=cell, bg_alpha=bg_alpha, min_area=min_area,
-        max_link_dist=max_link_dist,
-    )
+
+
+def tunable_params(detector: str = DEFAULT_DETECTOR) -> dict[str, Any]:
+    """Return ``{knob: default}`` for a detector.
+
+    Knobs are the defaulted parameters; ``stream``/``width``/``height`` carry no
+    default because they describe the frame stream rather than tune the analysis.
+    """
+    return {
+        name: p.default
+        for name, p in inspect.signature(detector_fn(detector)).parameters.items()
+        if p.default is not inspect.Parameter.empty
+    }
+
+
+def _coerce(name: str, value: Any, default: Any) -> Any:
+    """Coerce an override to the type of the knob's default.
+
+    Overrides arrive as CLI strings or as whatever TOML inferred (``80`` for a
+    float knob, say), so the default's type is the authority.
+    """
+    if isinstance(default, bool):
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in ("true", "1", "yes"):
+            return True
+        if text in ("false", "0", "no"):
+            return False
+        raise ValueError(f"param {name}={value!r} is not a boolean")
+    if isinstance(default, int):
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(f"param {name}={value!r} is not a whole number")
+        kind: type = int
+    elif isinstance(default, float):
+        kind = float
+    else:
+        return value
+    try:
+        return kind(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"param {name}={value!r} is not a valid {kind.__name__}"
+        ) from None
+
+
+def resolve_params(detector: str, overrides: dict[str, Any]) -> dict[str, Any]:
+    """Merge overrides onto a detector's knob defaults, validated and coerced.
+
+    Raises ValueError on an unknown knob name or an uncoercible value, so a
+    config typo fails before a clip is decoded rather than after.
+    """
+    knobs = tunable_params(detector)
+    unknown = sorted(set(overrides) - set(knobs))
+    if unknown:
+        raise ValueError(
+            f"Unknown {detector} param(s): {', '.join(unknown)}; "
+            f"knobs are: {', '.join(sorted(knobs))}"
+        )
+    return {**knobs, **{k: _coerce(k, v, knobs[k]) for k, v in overrides.items()}}
+
+
+def analyse(stream: BinaryIO, width: int, height: int, *,
+            detector: str = DEFAULT_DETECTOR, **params: Any) -> dict:
+    """Run a named, versioned detector over a raw gray8 frame stream.
+
+    Knob overrides are passed as keyword arguments and recorded, fully resolved,
+    in the result's ``params`` — so the sidecar always describes the run that
+    produced it even when the caller supplied nothing.
+    """
+    resolved = resolve_params(detector, params)
+    result = detector_fn(detector)(stream, width, height, **resolved)
+    result["params"] = resolved
+    return result
+
+
+def _knobs_epilog() -> str:
+    """Render every detector's knobs and defaults for --help."""
+    lines = ["detector knobs (override with --param NAME=VALUE):"]
+    for name in available_detectors():
+        lines.append(f"  {name}:")
+        lines += [f"    {k} = {v!r}" for k, v in tunable_params(name).items()]
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, epilog=_knobs_epilog(),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--detector", choices=available_detectors(),
                         default=DEFAULT_DETECTOR,
                         help="versioned detector implementation (default %(default)s)")
     parser.add_argument("--width", type=int, required=True)
     parser.add_argument("--height", type=int, required=True)
-    parser.add_argument("--threshold", type=int, default=12,
-                        help="per-pixel diff vs background (0-255) counted as hot (default 12)")
-    parser.add_argument("--window", type=int, default=6,
-                        help="frames accumulated per blob-extraction window (default 6)")
-    parser.add_argument("--min-hits", type=int, default=2,
-                        help="frames a pixel must be hot within a window (default 2)")
-    parser.add_argument("--cell", type=int, default=8,
-                        help="cell size in px for blob labelling/merging (default 8)")
-    parser.add_argument("--bg-alpha", type=float, default=0.05,
-                        help="EMA background adaption rate per frame (default 0.05)")
-    parser.add_argument("--min-area", type=int, default=4,
-                        help="minimum blob area in active pixels (default 4)")
-    parser.add_argument("--max-link-dist", type=float, default=80.0,
-                        help="max centroid jump in px to link blobs across windows (default 80)")
+    parser.add_argument("--param", action="append", default=[], metavar="NAME=VALUE",
+                        help="override one detector knob; repeatable. See the "
+                             "knob list below for names and defaults.")
     parser.add_argument("--clip", help="source clip name to embed in the sidecar")
     parser.add_argument("-o", "--output", required=True, help="JSON sidecar path")
     args = parser.parse_args(argv)
 
-    result = analyse(sys.stdin.buffer, args.width, args.height, args.threshold,
-                     window=args.window, min_hits=args.min_hits, cell=args.cell,
-                     bg_alpha=args.bg_alpha, min_area=args.min_area,
-                     max_link_dist=args.max_link_dist, detector=args.detector)
+    overrides: dict[str, Any] = {}
+    for item in args.param:
+        name, sep, value = item.partition("=")
+        if not sep or not name.strip():
+            parser.error(f"--param expects NAME=VALUE, got {item!r}")
+        overrides[name.strip()] = value.strip()
+
+    try:
+        result = analyse(sys.stdin.buffer, args.width, args.height,
+                         detector=args.detector, **overrides)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.clip:
         result = {"clip": args.clip, **result}
     Path(args.output).write_text(json.dumps(result), encoding="utf-8")

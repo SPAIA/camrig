@@ -89,11 +89,14 @@ def build_commands(cfg: Config, video: Path) -> list[list[str]]:
         "-vf", f"scale={motion_w}:{motion_h},format=gray",
         "-f", "rawvideo", "pipe:1",
     ]
+    knobs = []
+    for name, value in sorted(pp.active_motion_params().items()):
+        knobs += ["--param", f"{name}={value}"]
     motion = [
         *nice, sys.executable, "-m", "camrig.motion",
         "--detector", pp.motion_detector,
         "--width", str(motion_w), "--height", str(motion_h),
-        "--threshold", str(pp.motion_threshold),
+        *knobs,
         "--clip", video.name,
         "--output", str(motion_path(video)) + PART_SUFFIX,
     ]
