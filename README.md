@@ -89,6 +89,12 @@ Then finish the three secrets/config items it can't guess:
    **without** the bucket name.
 3. **`/etc/camrig/device_token`** (root:$CAM_USER, 0640) — the bearer token the Worker expects.
 
+After changing any of these, restart the supervisor so it picks them up:
+
+```bash
+sudo systemctl restart cam-supervisor
+```
+
 Reboot so the EEPROM change and `video`/`render` group membership take effect.
 
 ## Storage
