@@ -93,13 +93,16 @@ systemctl enable --now cam-shutdown.timer
 echo "==> Setting EEPROM POWER_OFF_ON_HALT for RTC wake"
 "$REPO_DIR/setup/set_eeprom.sh" || echo "    (EEPROM step skipped/failed — run setup/set_eeprom.sh manually)"
 
+echo "==> Enabling hardware watchdog + persistent journal (crash/freeze recovery)"
+"$REPO_DIR/setup/set_watchdog.sh" || echo "    (watchdog step skipped/failed — run setup/set_watchdog.sh manually)"
+
 cat <<EOF
 
 Done. Next steps:
   1. Edit $ETC/config.toml (storage paths, worker_ws_url, device_id, bucket).
   2. Fill $ETC/rclone.conf with your R2 credentials (root:$CAM_USER, chmod 0640).
   3. Paste the Worker device token into $ETC/device_token.
-  4. Reboot so the EEPROM change and group membership take effect.
+  4. Reboot so the EEPROM change, watchdog, and group membership take effect.
 
 Verify with:
   /opt/camrig/venv/bin/camrig status

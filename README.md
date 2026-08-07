@@ -76,8 +76,9 @@ sudo CAM_USER=spaia ./setup/install.sh      # CAM_USER = the camera/login user
 
 `install.sh` (idempotent) installs `ffmpeg`, `rclone`, `rpicam-apps`, creates a
 **venv** at `/opt/camrig/venv` (Trixie enforces PEP 668, so we never touch system
-Python), installs config to `/etc/camrig`, enables the systemd units, and sets the
-EEPROM for RTC wake.
+Python), installs config to `/etc/camrig`, enables the systemd units, sets the
+EEPROM for RTC wake, and enables the hardware watchdog + persistent journal (see
+[Crash resilience](#crash-resilience)).
 
 Then finish the three secrets/config items it can't guess:
 
@@ -95,7 +96,36 @@ After changing any of these, restart the supervisor so it picks them up:
 sudo systemctl restart cam-supervisor
 ```
 
-Reboot so the EEPROM change and `video`/`render` group membership take effect.
+Reboot so the EEPROM change, watchdog, and `video`/`render` group membership take effect.
+
+## Crash resilience
+
+Long unattended runs can hit a full system freeze (undervoltage, thermal
+throttling, an OOM kill, or a CSI/GigE driver hang) that takes the whole box
+— Tailscale included — off the network until someone physically power-cycles
+it. `setup/set_watchdog.sh` (run automatically by `install.sh`) wires up two
+things so that stops being necessary:
+
+- **Hardware watchdog** — enables the Pi 5's `bcm2835_wdt` (`dtparam=watchdog=on`
+  in `config.txt`) and has systemd ping it (`RuntimeWatchdogSec=15s` in
+  `/etc/systemd/system.conf.d/watchdog.conf`). If the system stops responding
+  for 15s straight, the hardware forces a reboot — no physical access needed.
+  Only takes effect after a reboot (`config.txt` is read at boot).
+- **Persistent journal** — `/etc/systemd/journald.conf.d/camrig-persistent.conf`
+  sets `Storage=persistent` (capped at `SystemMaxUse=200M`) so logs survive
+  the hard reset instead of vanishing with the default RAM-backed journal.
+
+After an unexpected reboot, check what happened right before it:
+
+```bash
+journalctl -b -1 -n 200          # tail of the boot before this one
+journalctl -b -1 -k | grep -i "under-voltage\|throttl\|oom\|killed"
+vcgencmd get_throttled            # nonzero = undervoltage/throttling has occurred
+```
+
+This masks the symptom (needing physical access) rather than fixing the root
+cause — treat a string of watchdog reboots as a signal to dig into power
+supply headroom, thermals, or a specific driver, not as "solved."
 
 ## Storage
 
