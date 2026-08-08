@@ -100,6 +100,26 @@ class PowerConfig:
 
 
 @dataclass
+class LedConfig:
+    # Flash the onboard activity LED a few times before each recording
+    # starts (scheduled, triggered, or startup), as a visible "about to
+    # record" cue. No-op if the LED sysfs path isn't found (e.g. off-Pi).
+    enabled: bool = True
+    flashes: int = 3
+    on_ms: int = 150
+    off_ms: int = 150
+
+
+@dataclass
+class StartupConfig:
+    # Record one extra clip shortly after the supervisor starts, in addition
+    # to the normal schedule — confirms the rig is capturing without waiting
+    # for the next :00/:30 slot.
+    record: bool = False
+    delay_seconds: int = 30
+
+
+@dataclass
 class CloudConfig:
     worker_ws_url: str = "wss://your-worker.example.workers.dev/device"
     device_id: str = "pi-rig-01"
@@ -115,6 +135,8 @@ class Config:
     storage: StorageConfig = field(default_factory=StorageConfig)
     upload: UploadConfig = field(default_factory=UploadConfig)
     power: PowerConfig = field(default_factory=PowerConfig)
+    led: LedConfig = field(default_factory=LedConfig)
+    startup: StartupConfig = field(default_factory=StartupConfig)
     cloud: CloudConfig = field(default_factory=CloudConfig)
 
     def device_token(self) -> str | None:
