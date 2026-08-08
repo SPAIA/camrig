@@ -88,7 +88,8 @@ def _cmd_debug_motion(args, cfg) -> int:
 
     output = Path(args.output) if args.output else None
     ok = motion_debug.run(
-        cfg, Path(args.clip), output=output, fps=args.fps, dry_run=args.dry_run
+        cfg, Path(args.clip), output=output, fps=args.fps,
+        trail_seconds=args.trail_seconds, dry_run=args.dry_run,
     )
     return 0 if ok else 1
 
@@ -179,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("clip", help="path to a .mkv clip (its .motion.json sidecar must exist)")
     p.add_argument("-o", "--output", help="output path (default: <clip>.motion_debug.mp4)")
     p.add_argument("--fps", type=float, help="output frame rate (default: capture.framerate)")
+    p.add_argument("--trail-seconds", type=float, default=3.0,
+                   help="how long a track's trail stays visible before fading (default 3.0)")
     p.add_argument("--dry-run", action="store_true", help="print the ffmpeg commands, do not run")
     p.set_defaults(func=_cmd_debug_motion)
 

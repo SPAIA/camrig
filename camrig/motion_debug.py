@@ -7,8 +7,8 @@ is or isn't catching. Requires the clip's ``.motion.json`` sidecar; run
 
 Decodes the clip at the motion-analysis resolution, so blob/track coordinates
 from the sidecar need no rescaling. Each window's blobs are drawn as grey
-boxes; each multi-window track gets a persistent coloured trail (built up
-frame by frame, not just the final path) with a dot at its current position.
+boxes; each multi-window track gets a coloured trail with a dot at its current
+position, fading out (--trail-seconds) rather than persisting for the clip.
 
     camrig debug-motion clip.mkv
     python -m camrig.motion_debug clip.mkv -o clip.debug.mp4
@@ -58,15 +58,18 @@ def _draw_rect(frame: np.ndarray, x: int, y: int, w: int, h: int, color, thickne
     frame[y0:y1, max(x1 - thickness, x0):x1] = color
 
 
-def _draw_circle(frame: np.ndarray, cx: int, cy: int, r: int, color) -> None:
+def _draw_circle(frame: np.ndarray, cx: int, cy: int, r: int, color,
+                 *, mask: np.ndarray | None = None) -> None:
     fh, fw = frame.shape[:2]
     y0, y1 = max(cy - r, 0), min(cy + r + 1, fh)
     x0, x1 = max(cx - r, 0), min(cx + r + 1, fw)
     if x1 <= x0 or y1 <= y0:
         return
     yy, xx = np.ogrid[y0:y1, x0:x1]
-    mask = (xx - cx) ** 2 + (yy - cy) ** 2 <= r * r
-    frame[y0:y1, x0:x1][mask] = color
+    disc = (xx - cx) ** 2 + (yy - cy) ** 2 <= r * r
+    frame[y0:y1, x0:x1][disc] = color
+    if mask is not None:
+        mask[y0:y1, x0:x1][disc] = True
 
 
 def _draw_line(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int, color, thickness: int,
@@ -116,7 +119,7 @@ def build_commands(
 
 def render(
     cfg: Config, video: Path, motion: dict, output: Path,
-    *, fps: float | None = None, dry_run: bool = False,
+    *, fps: float | None = None, trail_seconds: float = 3.0, dry_run: bool = False,
 ) -> bool:
     """Draw motion.json's blobs/tracks onto video, writing an annotated preview."""
     if motion.get("schema") != MOTION_SCHEMA:
@@ -129,6 +132,8 @@ def render(
     width, height = motion["width"], motion["height"]
     windows, tracks = motion["windows"], motion["tracks"]
     out_fps = fps or cfg.capture.framerate
+    window_frames = motion.get("params", {}).get("window", 6)
+    trail_windows = max(round(trail_seconds * out_fps / window_frames), 1)
 
     commands = build_commands(video, output, width, height, out_fps, cfg.postprocess.preview_crf)
     log.info("Debug preview: %s", describe_commands(commands))
@@ -143,30 +148,31 @@ def render(
     encoder = subprocess.Popen(commands[1], stdin=subprocess.PIPE)
     assert decoder.stdout is not None and encoder.stdin is not None
 
-    # Trails are persistent, but each output frame starts from a fresh decode
-    # (there's no frame to accumulate into), so replaying every point of a
-    # long-lived track on every frame it's visible costs O(track_len^2). Draw
-    # each new segment once into this overlay canvas as its window becomes
-    # current, then just copy the masked pixels onto every frame after that.
+    # Recomputed from scratch each time the current window changes (not every
+    # frame -- that's still ~10x/sec, cheap) and blitted onto frames via the
+    # mask in between. Bounding each track's trail to its last `trail_windows`
+    # points keeps this O(windows * trail_windows) regardless of how long a
+    # track lives, and gives the fade-after-a-few-seconds look for free.
     trail_canvas = np.zeros((height, width, 3), dtype=np.uint8)
     trail_mask = np.zeros((height, width), dtype=bool)
-    track_drawn = [0] * len(tracks)  # points already committed to the canvas, per track
 
-    def _extend_trails(w_idx: int) -> None:
+    def _rebuild_trails(w_idx: int) -> None:
+        trail_canvas.fill(0)
+        trail_mask.fill(False)
         for ti, track in enumerate(tracks):
             w0 = track["w0"]
             if w_idx < w0:
                 continue
-            n_visible = min(w_idx - w0 + 1, track["n"])
-            pts = track["path"]
+            idx_end = min(w_idx - w0, track["n"] - 1)
+            idx_start = max(0, idx_end - trail_windows + 1)
+            pts = track["path"][idx_start:idx_end + 1]
             color = _PALETTE[ti % len(_PALETTE)]
-            while track_drawn[ti] < n_visible - 1:
-                i = track_drawn[ti]
-                x0, y0 = pts[i]
-                x1, y1 = pts[i + 1]
-                _draw_line(trail_canvas, round(x0), round(y0), round(x1), round(y1), color, 2,
+            for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+                _draw_line(trail_canvas, round(x0), round(y0), round(x1), round(y1), color, 1,
                           mask=trail_mask)
-                track_drawn[ti] += 1
+            if pts:
+                cx, cy = pts[-1]
+                _draw_circle(trail_canvas, round(cx), round(cy), 2, color, mask=trail_mask)
 
     frame_idx = 0
     prev_w_idx = -1
@@ -179,7 +185,7 @@ def render(
         w_idx = frame_windows[frame_idx] if frame_idx < len(frame_windows) else len(windows) - 1
 
         if w_idx != prev_w_idx:
-            _extend_trails(w_idx)
+            _rebuild_trails(w_idx)
             prev_w_idx = w_idx
 
         frame[trail_mask] = trail_canvas[trail_mask]
@@ -187,12 +193,6 @@ def render(
         for blob in windows[w_idx]["blobs"]:
             x, y, bw, bh = blob["bbox"]
             _draw_rect(frame, x, y, bw, bh, _BLOB_COLOR, 1)
-
-        for ti, track in enumerate(tracks):
-            if track_drawn[ti] == 0 and w_idx < track["w0"]:
-                continue
-            cx, cy = track["path"][min(track_drawn[ti], track["n"] - 1)]
-            _draw_circle(frame, round(cx), round(cy), 3, _PALETTE[ti % len(_PALETTE)])
 
         encoder.stdin.write(frame.tobytes())
         frame_idx += 1
@@ -214,14 +214,15 @@ def render(
     return True
 
 
-def run(cfg: Config, video: Path, *, output: Path | None = None,
-        fps: float | None = None, dry_run: bool = False) -> bool:
+def run(cfg: Config, video: Path, *, output: Path | None = None, fps: float | None = None,
+        trail_seconds: float = 3.0, dry_run: bool = False) -> bool:
     motion_file = motion_path(video)
     if not motion_file.exists():
         log.error("Missing %s; run `camrig postprocess %s` first", motion_file, video)
         return False
     motion = json.loads(motion_file.read_text(encoding="utf-8"))
-    return render(cfg, video, motion, output or debug_path(video), fps=fps, dry_run=dry_run)
+    return render(cfg, video, motion, output or debug_path(video),
+                 fps=fps, trail_seconds=trail_seconds, dry_run=dry_run)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -230,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("clip", help="path to a .mkv clip (its .motion.json sidecar must exist)")
     parser.add_argument("-o", "--output", help="output path (default: <clip>.motion_debug.mp4)")
     parser.add_argument("--fps", type=float, help="output frame rate (default: capture.framerate)")
+    parser.add_argument("--trail-seconds", type=float, default=3.0,
+                        help="how long a track's trail stays visible before fading (default 3.0)")
     parser.add_argument("-c", "--config", help="path to config.toml")
     parser.add_argument("--dry-run", action="store_true", help="print the ffmpeg commands, do not run")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -240,7 +243,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(args.config)
     video = Path(args.clip)
     output = Path(args.output) if args.output else None
-    ok = run(cfg, video, output=output, fps=args.fps, dry_run=args.dry_run)
+    ok = run(cfg, video, output=output, fps=args.fps, trail_seconds=args.trail_seconds,
+            dry_run=args.dry_run)
     return 0 if ok else 1
 
 
