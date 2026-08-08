@@ -69,7 +69,8 @@ def _draw_circle(frame: np.ndarray, cx: int, cy: int, r: int, color) -> None:
     frame[y0:y1, x0:x1][mask] = color
 
 
-def _draw_line(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int, color, thickness: int) -> None:
+def _draw_line(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int, color, thickness: int,
+              *, mask: np.ndarray | None = None) -> None:
     fh, fw = frame.shape[:2]
     steps = max(abs(x1 - x0), abs(y1 - y0), 1)
     xs = np.linspace(x0, x1, steps + 1).round().astype(int)
@@ -80,6 +81,8 @@ def _draw_line(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int, color, thi
         ya, yb = max(y - r, 0), min(y + r + 1, fh)
         if xb > xa and yb > ya:
             frame[ya:yb, xa:xb] = color
+            if mask is not None:
+                mask[ya:yb, xa:xb] = True
 
 
 def _frame_windows(windows: list[dict]) -> list[int]:
@@ -135,11 +138,39 @@ def render(
 
     frame_windows = _frame_windows(windows)
     frame_bytes = width * height * 3
+    total_frames = motion.get("frame_count", len(frame_windows))
     decoder = subprocess.Popen(commands[0], stdout=subprocess.PIPE)
     encoder = subprocess.Popen(commands[1], stdin=subprocess.PIPE)
     assert decoder.stdout is not None and encoder.stdin is not None
 
+    # Trails are persistent, but each output frame starts from a fresh decode
+    # (there's no frame to accumulate into), so replaying every point of a
+    # long-lived track on every frame it's visible costs O(track_len^2). Draw
+    # each new segment once into this overlay canvas as its window becomes
+    # current, then just copy the masked pixels onto every frame after that.
+    trail_canvas = np.zeros((height, width, 3), dtype=np.uint8)
+    trail_mask = np.zeros((height, width), dtype=bool)
+    track_drawn = [0] * len(tracks)  # points already committed to the canvas, per track
+
+    def _extend_trails(w_idx: int) -> None:
+        for ti, track in enumerate(tracks):
+            w0 = track["w0"]
+            if w_idx < w0:
+                continue
+            n_visible = min(w_idx - w0 + 1, track["n"])
+            pts = track["path"]
+            color = _PALETTE[ti % len(_PALETTE)]
+            while track_drawn[ti] < n_visible - 1:
+                i = track_drawn[ti]
+                x0, y0 = pts[i]
+                x1, y1 = pts[i + 1]
+                _draw_line(trail_canvas, round(x0), round(y0), round(x1), round(y1), color, 2,
+                          mask=trail_mask)
+                track_drawn[ti] += 1
+
     frame_idx = 0
+    prev_w_idx = -1
+    log_every = max(total_frames // 20, 1)
     while True:
         data = decoder.stdout.read(frame_bytes)
         if len(data) < frame_bytes:
@@ -147,25 +178,27 @@ def render(
         frame = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3).copy()
         w_idx = frame_windows[frame_idx] if frame_idx < len(frame_windows) else len(windows) - 1
 
+        if w_idx != prev_w_idx:
+            _extend_trails(w_idx)
+            prev_w_idx = w_idx
+
+        frame[trail_mask] = trail_canvas[trail_mask]
+
         for blob in windows[w_idx]["blobs"]:
             x, y, bw, bh = blob["bbox"]
             _draw_rect(frame, x, y, bw, bh, _BLOB_COLOR, 1)
 
         for ti, track in enumerate(tracks):
-            w0 = track["w0"]
-            if w_idx < w0:
+            if track_drawn[ti] == 0 and w_idx < track["w0"]:
                 continue
-            n_visible = min(w_idx - w0 + 1, track["n"])
-            pts = track["path"][:n_visible]
-            color = _PALETTE[ti % len(_PALETTE)]
-            for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
-                _draw_line(frame, round(x0), round(y0), round(x1), round(y1), color, 2)
-            if pts:
-                cx, cy = pts[-1]
-                _draw_circle(frame, round(cx), round(cy), 3, color)
+            cx, cy = track["path"][min(track_drawn[ti], track["n"] - 1)]
+            _draw_circle(frame, round(cx), round(cy), 3, _PALETTE[ti % len(_PALETTE)])
 
         encoder.stdin.write(frame.tobytes())
         frame_idx += 1
+        if frame_idx % log_every == 0:
+            log.info("Debug preview: %d/%d frames (%.0f%%)",
+                     frame_idx, total_frames, 100 * frame_idx / total_frames)
 
     decoder.stdout.close()
     encoder.stdin.close()
