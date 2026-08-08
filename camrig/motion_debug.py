@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import Config, load_config
+from .motion import SCHEMA as MOTION_SCHEMA
 from .postprocess import motion_path
 from .record import describe_commands
 
@@ -115,6 +116,13 @@ def render(
     *, fps: float | None = None, dry_run: bool = False,
 ) -> bool:
     """Draw motion.json's blobs/tracks onto video, writing an annotated preview."""
+    if motion.get("schema") != MOTION_SCHEMA:
+        log.error(
+            "%s is schema %s (need %s, blob-track-v1); regenerate with "
+            "`camrig postprocess --force %s`",
+            motion_path(video), motion.get("schema"), MOTION_SCHEMA, video,
+        )
+        return False
     width, height = motion["width"], motion["height"]
     windows, tracks = motion["windows"], motion["tracks"]
     out_fps = fps or cfg.capture.framerate
