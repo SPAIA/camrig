@@ -4,6 +4,7 @@ Subcommands:
   supervise   Run the long-lived capture supervisor + Cloudflare link (service).
   record      Record a single clip now (testing / manual; supports --dry-run).
   postprocess Generate preview + motion sidecars (one clip, or all pending).
+  debug-motion Render motion tracks/blobs onto a clip for visual QA (on-demand).
   upload      Flush pending clips to R2 now and prune (manual catch-up).
   focus       Serve a live focus-assist page (manual lens; reach it over Tailscale).
   boot        Boot tasks: NTP sync + catch-up upload + prune.
@@ -78,6 +79,17 @@ def _cmd_postprocess(args, cfg) -> int:
         ok = postprocess.process_pending(
             cfg, base, force=args.force, dry_run=args.dry_run
         )
+    return 0 if ok else 1
+
+
+def _cmd_debug_motion(args, cfg) -> int:
+    from pathlib import Path
+    from . import motion_debug
+
+    output = Path(args.output) if args.output else None
+    ok = motion_debug.run(
+        cfg, Path(args.clip), output=output, fps=args.fps, dry_run=args.dry_run
+    )
     return 0 if ok else 1
 
 
@@ -161,6 +173,14 @@ def main(argv: list[str] | None = None) -> int:
                    help="regenerate even if sidecars exist (after changing camrig/motion.py)")
     p.add_argument("--dry-run", action="store_true", help="print the commands, do not run")
     p.set_defaults(func=_cmd_postprocess)
+
+    p = sub.add_parser("debug-motion",
+                       help="render motion tracks/blobs onto a clip for visual QA")
+    p.add_argument("clip", help="path to a .mkv clip (its .motion.json sidecar must exist)")
+    p.add_argument("-o", "--output", help="output path (default: <clip>.motion_debug.mp4)")
+    p.add_argument("--fps", type=float, help="output frame rate (default: capture.framerate)")
+    p.add_argument("--dry-run", action="store_true", help="print the ffmpeg commands, do not run")
+    p.set_defaults(func=_cmd_debug_motion)
 
     p = sub.add_parser("upload", help="upload pending clips to R2 now, then prune")
     p.add_argument("--dry-run", action="store_true", help="print the commands, do not run")
