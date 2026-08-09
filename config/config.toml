@@ -85,7 +85,7 @@ preview_crf = 28
 # Always runs at the source frame rate so metric index i aligns with .pts line i.
 motion_width = 728
 # Per-pixel difference (0-255) above which a pixel counts as "active" motion.
-motion_threshold = 12
+motion_threshold = 6
 # Unix niceness for postprocess jobs, so an in-progress capture always wins the CPU.
 nice = 10
 
@@ -94,7 +94,7 @@ nice = 10
 start_hour = 6
 stop_hour = 22
 # Scheduled clip cadence in minutes (on :00 and :30 within the window).
-interval_min = 30
+interval_min = 10
 
 [storage]
 # Preferred fast storage. Used if this path is a mountpoint and writable.
@@ -113,12 +113,12 @@ min_free_gb = 5
 delete_after_upload = false
 
 [upload]
-enabled = true
+enabled = false
 
 # Upload each clip as soon as its postprocess finishes, so device space frees
 # up through the day. false = uploads happen only on the nightly shutdown and
 # boot catch-up passes.
-immediate = true
+immediate = false
 
 # Upload the full-resolution video itself. false = ship only the sidecars
 # (preview.mp4, motion.json, pts, json) — the full-res clip then exists only on
