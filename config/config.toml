@@ -134,6 +134,26 @@ bucket = "spaia-vision"
 # Hour to wake the next morning (matches schedule.start_hour).
 wake_hour = 5
 
+[led]
+# Flash the Pi's onboard activity LED a few times before each recording
+# starts (scheduled, triggered, or startup) — a visible "about to record"
+# cue for anyone near the rig. Silently does nothing if the LED can't be
+# found (e.g. running off the Pi, or sysfs isn't writable by this user).
+enabled = true
+# Number of on/off flashes.
+flashes = 3
+# Flash timing, milliseconds on and off.
+on_ms = 150
+off_ms = 150
+
+[startup]
+# Record one extra clip shortly after the supervisor starts, in addition to
+# the normal schedule — handy to confirm the rig is capturing without
+# waiting for the next :00/:30 slot.
+record = false
+# Delay before the startup clip begins, in seconds.
+delay_seconds = 30
+
 [cloud]
 # Outbound WebSocket URL of the Cloudflare Worker device endpoint.
 worker_ws_url = "wss://your-worker.example.workers.dev/device"

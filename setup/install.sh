@@ -55,6 +55,11 @@ if [[ ! -f "$ETC/config.toml" ]]; then
 else
   echo "    $ETC/config.toml exists; leaving it"
 fi
+# No secrets in this file (unlike rclone.conf/device_token below) -- group-
+# writable by $CAM_USER so `camrig motion-view` can persist tuned thresholds
+# back into it without running as root.
+chown "root:$CAM_USER" "$ETC/config.toml"
+chmod 0664 "$ETC/config.toml"
 if [[ ! -f "$ETC/rclone.conf" ]]; then
   install -m 0640 "$REPO_DIR/config/rclone.conf.example" "$ETC/rclone.conf"
   echo "    wrote $ETC/rclone.conf TEMPLATE — fill in your R2 credentials"

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from .config import Config
-from . import postprocess, record, storage, upload
+from . import led, postprocess, record, storage, upload
 
 log = logging.getLogger("camrig.supervisor")
 
@@ -91,6 +91,13 @@ class Supervisor:
     ) -> None:
         """Hold the camera lock and run one capture to completion/stop."""
         async with self._camera_lock:
+            if self.cfg.led.enabled:
+                await asyncio.to_thread(
+                    led.flash,
+                    self.cfg.led.flashes,
+                    on_ms=self.cfg.led.on_ms,
+                    off_ms=self.cfg.led.off_ms,
+                )
             started_at = datetime.now().astimezone()
             day_dir = storage.day_dir(self.base, started_at.date())
             paths = record.clip_paths(day_dir, self.cfg.capture.profile, started_at)
@@ -269,12 +276,29 @@ class Supervisor:
             except Exception:
                 log.exception("Scheduled capture failed")
 
+    async def _startup_capture(self) -> None:
+        """Record one extra clip shortly after startup (cfg.startup.record)."""
+        delay = max(0, self.cfg.startup.delay_seconds)
+        log.info("Startup capture scheduled in %ds", delay)
+        await asyncio.sleep(delay)
+        if self._manual_active:
+            log.info("Skipping startup capture; manual session active")
+            return
+        try:
+            await self._run_capture(
+                trigger="startup", session_id=None, duration_seconds=None
+            )
+        except Exception:
+            log.exception("Startup capture failed")
+
     async def run(self, cloudlink=None) -> None:
         """Run scheduler + (optional) Cloudflare link until cancelled."""
         if cloudlink is not None:
             cloudlink.bind(self)
             self.on_event = cloudlink.send_event
         tasks = [asyncio.create_task(self._scheduler_loop())]
+        if self.cfg.startup.record:
+            tasks.append(asyncio.create_task(self._startup_capture()))
         if cloudlink is not None:
             tasks.append(asyncio.create_task(cloudlink.run()))
         log.info("Supervisor running (storage=%s)", self.base)
