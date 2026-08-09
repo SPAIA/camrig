@@ -117,18 +117,28 @@ def build_commands(
     return [decode, encode]
 
 
+def load_motion(video: Path) -> dict | None:
+    """Load and validate a clip's .motion.json sidecar, or None (logged) if unusable."""
+    motion_file = motion_path(video)
+    if not motion_file.exists():
+        log.error("Missing %s; run `camrig postprocess %s` first", motion_file, video)
+        return None
+    motion = json.loads(motion_file.read_text(encoding="utf-8"))
+    if motion.get("schema") != MOTION_SCHEMA:
+        log.error(
+            "%s is schema %s (need %s, blob-track-v1); regenerate with "
+            "`camrig postprocess --force %s`",
+            motion_file, motion.get("schema"), MOTION_SCHEMA, video,
+        )
+        return None
+    return motion
+
+
 def render(
     cfg: Config, video: Path, motion: dict, output: Path,
     *, fps: float | None = None, trail_seconds: float = 3.0, dry_run: bool = False,
 ) -> bool:
     """Draw motion.json's blobs/tracks onto video, writing an annotated preview."""
-    if motion.get("schema") != MOTION_SCHEMA:
-        log.error(
-            "%s is schema %s (need %s, blob-track-v1); regenerate with "
-            "`camrig postprocess --force %s`",
-            motion_path(video), motion.get("schema"), MOTION_SCHEMA, video,
-        )
-        return False
     width, height = motion["width"], motion["height"]
     windows, tracks = motion["windows"], motion["tracks"]
     out_fps = fps or cfg.capture.framerate
@@ -216,11 +226,9 @@ def render(
 
 def run(cfg: Config, video: Path, *, output: Path | None = None, fps: float | None = None,
         trail_seconds: float = 3.0, dry_run: bool = False) -> bool:
-    motion_file = motion_path(video)
-    if not motion_file.exists():
-        log.error("Missing %s; run `camrig postprocess %s` first", motion_file, video)
+    motion = load_motion(video)
+    if motion is None:
         return False
-    motion = json.loads(motion_file.read_text(encoding="utf-8"))
     return render(cfg, video, motion, output or debug_path(video),
                  fps=fps, trail_seconds=trail_seconds, dry_run=dry_run)
 

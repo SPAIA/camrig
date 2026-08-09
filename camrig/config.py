@@ -62,6 +62,13 @@ class PostprocessConfig:
     motion_width: int = 728
     motion_threshold: int = 12
     nice: int = 10
+    # Insect-vs-plant discriminators (camrig.motion tracks: straightness = net
+    # displacement / path length, chronic = how persistently active a blob's
+    # cells stayed). Not applied by the analysis itself yet -- for now these
+    # only drive the camrig.motion_view filter sliders, tuned there and
+    # persisted here so they survive between sessions. 0.0/1.0 = no filtering.
+    min_straightness: float = 0.0
+    max_chronic: float = 1.0
 
 
 @dataclass
@@ -169,3 +176,46 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         if is_dataclass(section_obj) and isinstance(section_data, dict):
             _apply_section(section_obj, section_data)
     return cfg
+
+
+def set_config_value(path: str | os.PathLike[str], section: str, key: str, value: str) -> None:
+    """Set ``key = value`` inside ``[section]`` of the TOML file at ``path``.
+
+    A targeted line-level patch, not a full TOML round-trip: it updates an
+    existing ``key = ...`` line in place, or appends the key to the section
+    (creating the section if needed), leaving every other line -- including
+    comments -- untouched. Only safe for config files (like this project's)
+    that don't put comments on the same line as a value; a general TOML
+    writer would need a library (tomlkit) this project doesn't otherwise need.
+    """
+    path = Path(path)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    except FileNotFoundError:
+        lines = []
+
+    header = f"[{section}]"
+    key_line = f"{key} = {value}\n"
+    section_start: int | None = None
+    section_end = len(lines)
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if section_start is not None and stripped.startswith("[") and stripped.endswith("]"):
+            section_end = i
+            break
+        if stripped == header:
+            section_start = i
+
+    if section_start is None:
+        if lines and not lines[-1].endswith("\n"):
+            lines.append("\n")
+        lines.append(f"\n{header}\n{key_line}")
+    else:
+        for i in range(section_start + 1, section_end):
+            if lines[i].split("=", 1)[0].strip() == key:
+                lines[i] = key_line
+                break
+        else:
+            lines.insert(section_end, key_line)
+
+    path.write_text("".join(lines), encoding="utf-8")
