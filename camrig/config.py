@@ -121,9 +121,12 @@ class LedConfig:
 class StartupConfig:
     # Record one extra clip shortly after the supervisor starts, in addition
     # to the normal schedule — confirms the rig is capturing without waiting
-    # for the next :00/:30 slot.
+    # for the next :00/:30 slot. Keep the delay generous: boot already stacks
+    # Wi-Fi association, NVMe enumeration, and cam-boot's NTP sync/catch-up
+    # upload, and starting the camera (CSI power-up + sustained NVMe writes)
+    # too soon on top of that has caused undervoltage hangs in practice.
     record: bool = False
-    delay_seconds: int = 30
+    delay_seconds: int = 150
 
 
 @dataclass

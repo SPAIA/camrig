@@ -152,7 +152,7 @@ off_ms = 150
 # waiting for the next :00/:30 slot.
 record = false
 # Delay before the startup clip begins, in seconds.
-delay_seconds = 30
+delay_seconds = 180
 
 [cloud]
 # Outbound WebSocket URL of the Cloudflare Worker device endpoint.
