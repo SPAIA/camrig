@@ -96,6 +96,15 @@ After changing any of these, restart the supervisor so it picks them up:
 sudo systemctl restart cam-supervisor
 ```
 
+To stop/start it manually, or check on it:
+
+```bash
+sudo systemctl stop cam-supervisor
+sudo systemctl start cam-supervisor
+systemctl status cam-supervisor
+journalctl -u cam-supervisor -f      # tail logs
+```
+
 Reboot so the EEPROM change, watchdog, and `video`/`render` group membership take effect.
 
 ## Crash resilience
