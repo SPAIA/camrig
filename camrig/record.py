@@ -38,8 +38,9 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -126,6 +127,55 @@ def _common_rpicam_args(cfg: CaptureConfig, pts_path: Path, duration_ms: int) ->
     return args
 
 
+def _probe_rpicam_exposure(cfg: CaptureConfig) -> tuple[int, float]:
+    """Run a short discarded auto-exposure capture and read back the
+    converged shutter/gain.
+
+    rpicam-vid has no "converge once then hold" mode the way Basler's
+    ExposureAuto=Once does, so this runs AE for real over a brief warm-up
+    clip and reads the last frame's metadata for whichever of shutter/gain
+    was left at 0 (auto); a channel already fixed in cfg is passed through
+    so AE converges against the real operating point.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        meta_path = Path(tmp) / "meta.json"
+        args = [
+            "rpicam-vid", "--camera", "0",
+            "--width", str(cfg.width), "--height", str(cfg.height),
+            "--framerate", str(cfg.framerate),
+            "--nopreview", "--timeout", str(cfg.auto_lock_warmup_ms),
+            "--metadata", str(meta_path), "--metadata-format", "json",
+            "-o", "/dev/null",
+        ]
+        if cfg.shutter_us > 0:
+            args += ["--shutter", str(cfg.shutter_us)]
+        if cfg.gain > 0:
+            args += ["--gain", str(cfg.gain)]
+        subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        frame = json.loads(meta_path.read_text(encoding="utf-8"))
+    if isinstance(frame, list):
+        frame = frame[-1]
+    shutter = cfg.shutter_us if cfg.shutter_us > 0 else round(frame["ExposureTime"])
+    gain = cfg.gain if cfg.gain > 0 else float(frame["AnalogueGain"])
+    return shutter, gain
+
+
+def resolve_auto_lock(cfg: CaptureConfig) -> CaptureConfig:
+    """For rpicam with auto_lock set, probe converged exposure/gain and
+    return a copy of cfg with shutter_us/gain pinned to those values.
+
+    Basler locks in-process instead (see camrig.basler's --auto-lock), so
+    this is a no-op for that backend, and a no-op when auto_lock is off or
+    both shutter_us and gain are already manual (nothing to converge).
+    """
+    if cfg.camera != "rpicam" or not cfg.auto_lock:
+        return cfg
+    if cfg.shutter_us > 0 and cfg.gain > 0:
+        return cfg
+    shutter, gain = _probe_rpicam_exposure(cfg)
+    return replace(cfg, shutter_us=shutter, gain=gain)
+
+
 def mjpeg_qv(quality: int) -> int:
     """Map rpicam-style quality (1-100, higher = better) to ffmpeg -q:v (2-31,
     lower = better) for the Basler MJPEG encode. Approximate, but keeps one
@@ -152,6 +202,8 @@ def _basler_producer(
         args += ["--shutter", str(cfg.shutter_us)]
     if cfg.gain > 0:
         args += ["--gain", str(cfg.gain)]
+    if cfg.auto_lock:
+        args += ["--auto-lock", "--auto-lock-timeout-ms", str(cfg.auto_lock_warmup_ms)]
     if basler.serial:
         args += ["--serial", basler.serial]
     if basler.ip:
@@ -381,12 +433,18 @@ def record_clip(
     paths = clip_paths(day_dir, cfg.profile, started_at)
     partial = paths.in_progress()
     duration_ms = int((duration_seconds or cfg.clip_seconds) * 1000)
-    commands = build_commands(cfg, partial, duration_ms, basler=basler)
-
-    log.info("Capture (%s): %s", trigger, describe_commands(commands))
     if dry_run:
+        commands = build_commands(cfg, partial, duration_ms, basler=basler)
+        log.info("Capture (%s): %s", trigger, describe_commands(commands))
+        if cfg.camera == "rpicam" and cfg.auto_lock and (cfg.shutter_us <= 0 or cfg.gain <= 0):
+            print("(auto-lock: a warm-up capture probes exposure/gain first, then the "
+                  "clip below runs with --shutter/--gain pinned to the converged values)")
         print(describe_commands(commands))
         return paths
+
+    cfg = resolve_auto_lock(cfg)
+    commands = build_commands(cfg, partial, duration_ms, basler=basler)
+    log.info("Capture (%s): %s", trigger, describe_commands(commands))
 
     write_metadata(
         partial, cfg, trigger=trigger, started_at=started_at,

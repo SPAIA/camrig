@@ -34,6 +34,17 @@ shutter_us = 2000
 # Unit differs by backend: rpicam = analogue gain multiplier; basler = dB.
 gain = 0.0
 
+# When shutter_us/gain are 0 (auto), converge auto-exposure/gain briefly at
+# the start of each clip, then hold it fixed for the rest of that clip --
+# steady exposure without the AE algorithm hunting mid-recording. No effect
+# if both shutter_us and gain are manual.
+auto_lock = false
+
+# Max time (ms) to let auto-exposure/gain converge before locking: basler
+# polls for this long, rpicam runs a discarded warm-up capture of this
+# length (added to each clip's wall time, on top of clip_seconds).
+auto_lock_warmup_ms = 1000
+
 # ISP denoise mode (rpicam only; the Basler mono path applies no denoise).
 # "cdn_off" disables temporal/3D denoise, which otherwise smears or erases
 # insect-sized moving targets. Other values: auto, cdn_fast, cdn_hq.
@@ -93,7 +104,7 @@ nice = 10
 # Active recording window (local time). Outside it the Pi shuts down.
 start_hour = 6
 stop_hour = 22
-# Scheduled clip cadence in minutes (on :00 and :30 within the window).
+# Scheduled clip cadence in minutes (on the clock, e.g. :00/:10/:20/... for 10).
 interval_min = 10
 
 [storage]
@@ -150,9 +161,9 @@ off_ms = 150
 # Record one extra clip shortly after the supervisor starts, in addition to
 # the normal schedule — handy to confirm the rig is capturing without
 # waiting for the next :00/:30 slot.
-record = false
+record = true
 # Delay before the startup clip begins, in seconds.
-delay_seconds = 180
+delay_seconds = 300
 
 [cloud]
 # Outbound WebSocket URL of the Cloudflare Worker device endpoint.

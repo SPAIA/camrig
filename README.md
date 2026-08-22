@@ -47,6 +47,9 @@ What it does:
 (1456×1088). To actually reach it the shutter must be ≤ ~16 ms; to *freeze* insect
 motion use a short shutter (default `shutter_us = 2000`), which needs good lighting.
 Raise `gain` if too dark. These are manual for repeatability — tune in `config.toml`.
+Alternatively set `auto_lock = true` to let the camera auto-expose/auto-gain
+converge briefly at the start of each clip, then hold that value fixed for
+the rest of it (works on both backends; see `auto_lock_warmup_ms`).
 
 ## Second backend: Basler ace 2 mono over GigE (comparison rig)
 

@@ -30,6 +30,15 @@ class CaptureConfig:
     shutter_us: int = 2000
     # rpicam: analogue gain multiplier. basler: sensor gain in dB. 0 = auto.
     gain: float = 0.0
+    # When shutter_us/gain are left at 0 (auto), converge auto-exposure/gain
+    # briefly at the start of each clip, then hold the converged value fixed
+    # for the rest of it -- steady exposure without the AE algorithm hunting
+    # mid-recording. No effect if both shutter_us and gain are manual.
+    auto_lock: bool = False
+    # Max time to let auto-exposure/gain converge before locking: basler
+    # polls ExposureAuto/GainAuto for this long, rpicam runs a discarded
+    # warm-up capture of this length.
+    auto_lock_warmup_ms: int = 1000
     denoise: str = "cdn_off"
     clip_seconds: int = 300
     max_session_seconds: int = 600

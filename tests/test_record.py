@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from camrig.record import ClipPaths, Recording, clip_paths
+from camrig.config import BaslerConfig, CaptureConfig
+from camrig.record import ClipPaths, Recording, build_commands, clip_paths, resolve_auto_lock
 
 
 def _family(root: Path) -> ClipPaths:
@@ -73,6 +75,67 @@ class RecordingWaitTests(unittest.TestCase):
 
     def test_all_clean_returns_zero(self) -> None:
         self.assertEqual(self._recording(0, 0).wait(), 0)
+
+
+class AutoLockTests(unittest.TestCase):
+    def test_basler_build_commands_passes_auto_lock_flags(self) -> None:
+        cfg = CaptureConfig(camera="basler", profile="raw", auto_lock=True,
+                             auto_lock_warmup_ms=1500, shutter_us=0, gain=0.0)
+        paths = _family(Path("/tmp"))
+        [producer] = build_commands(cfg, paths, 1000, basler=BaslerConfig())
+        self.assertIn("--auto-lock", producer)
+        i = producer.index("--auto-lock-timeout-ms")
+        self.assertEqual(producer[i + 1], "1500")
+
+    def test_resolve_auto_lock_is_noop_for_basler(self) -> None:
+        cfg = CaptureConfig(camera="basler", auto_lock=True, shutter_us=0, gain=0.0)
+        self.assertIs(resolve_auto_lock(cfg), cfg)
+
+    def test_resolve_auto_lock_is_noop_when_disabled(self) -> None:
+        cfg = CaptureConfig(camera="rpicam", auto_lock=False, shutter_us=0, gain=0.0)
+        self.assertIs(resolve_auto_lock(cfg), cfg)
+
+    def test_resolve_auto_lock_is_noop_when_both_manual(self) -> None:
+        cfg = CaptureConfig(camera="rpicam", auto_lock=True, shutter_us=2000, gain=4.0)
+        self.assertIs(resolve_auto_lock(cfg), cfg)
+
+    def test_resolve_auto_lock_probes_rpicam_metadata(self) -> None:
+        cfg = CaptureConfig(camera="rpicam", auto_lock=True, shutter_us=0, gain=0.0)
+
+        def fake_run(args, **kwargs):
+            meta_path = Path(args[args.index("--metadata") + 1])
+            meta_path.write_text(
+                json.dumps({"ExposureTime": 8234.0, "AnalogueGain": 3.5}),
+                encoding="utf-8",
+            )
+            return Mock(returncode=0)
+
+        with patch("camrig.record.subprocess.run", side_effect=fake_run) as run:
+            resolved = resolve_auto_lock(cfg)
+
+        run.assert_called_once()
+        self.assertEqual(resolved.shutter_us, 8234)
+        self.assertEqual(resolved.gain, 3.5)
+        # Original cfg is untouched; only the resolved copy carries the probe.
+        self.assertEqual(cfg.shutter_us, 0)
+
+    def test_resolve_auto_lock_keeps_manual_channel_fixed(self) -> None:
+        cfg = CaptureConfig(camera="rpicam", auto_lock=True, shutter_us=2000, gain=0.0)
+
+        def fake_run(args, **kwargs):
+            self.assertIn("--shutter", args)
+            meta_path = Path(args[args.index("--metadata") + 1])
+            meta_path.write_text(
+                json.dumps({"ExposureTime": 2000.0, "AnalogueGain": 6.0}),
+                encoding="utf-8",
+            )
+            return Mock(returncode=0)
+
+        with patch("camrig.record.subprocess.run", side_effect=fake_run):
+            resolved = resolve_auto_lock(cfg)
+
+        self.assertEqual(resolved.shutter_us, 2000)  # unchanged, was manual
+        self.assertEqual(resolved.gain, 6.0)  # probed, was auto
 
 
 if __name__ == "__main__":

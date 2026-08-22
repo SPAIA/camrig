@@ -103,11 +103,15 @@ class Supervisor:
             paths = record.clip_paths(day_dir, self.cfg.capture.profile, started_at)
             partial = paths.in_progress()
             duration = duration_seconds or self.cfg.capture.clip_seconds
+            # rpicam auto-lock needs a real (blocking) warm-up capture to
+            # probe converged exposure/gain; basler locks in-process and this
+            # call is a cheap no-op for it. Off the event loop either way.
+            capture_cfg = await asyncio.to_thread(record.resolve_auto_lock, self.cfg.capture)
             commands = record.build_commands(
-                self.cfg.capture, partial, int(duration * 1000), basler=self.cfg.basler
+                capture_cfg, partial, int(duration * 1000), basler=self.cfg.basler
             )
             record.write_metadata(
-                partial, self.cfg.capture,
+                partial, capture_cfg,
                 trigger=trigger, started_at=started_at, session_id=session_id,
                 clip_name=paths.video.name,
             )

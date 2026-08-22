@@ -18,7 +18,9 @@ on machines without the SDK installed.
 
 Exposure semantics follow rpicam: ``--shutter`` in µs (0 = auto-expose) and
 ``--gain`` 0 = auto. Note the unit difference: Basler gain is in **dB**, not
-an analogue multiplier.
+an analogue multiplier. ``--auto-lock`` (with shutter/gain left at 0) lets
+the camera converge exposure/gain for a moment at grab start, then locks it
+for the rest of the clip instead of chasing changes continuously.
 
 Network/transport tuning (packet size, inter-packet delay, device selection)
 comes from the [basler] config section via flags; see docs/basler-gige.md for
@@ -53,6 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--framerate", type=float, default=30.0)
     p.add_argument("--shutter", type=int, default=0, help="exposure in us; 0 = auto")
     p.add_argument("--gain", type=float, default=0.0, help="gain in dB; 0 = auto")
+    p.add_argument("--auto-lock", action="store_true",
+                    help="converge auto-exposure/gain once, then hold it fixed for the clip")
+    p.add_argument("--auto-lock-timeout-ms", type=int, default=1000,
+                    help="max time to wait for auto-exposure/gain convergence before locking")
     p.add_argument("--timeout", type=int, default=0,
                    help="capture length in ms; 0 = until SIGINT")
     p.add_argument("--save-pts", dest="save_pts", default=None,
@@ -111,6 +117,33 @@ def _configure_roi(camera, width: int, height: int) -> tuple[int, int]:
     _set(camera, "OffsetY",
          _align((hmax - h) // 2, camera.OffsetY.GetMin(), camera.OffsetY.GetInc()))
     return w, h
+
+
+def _wait_for_auto_lock(camera, pylon, stop: dict, timeout_ms: int) -> None:
+    """Drain frames until ExposureAuto/GainAuto (set to "Once") settle back
+    to "Off", so the value the camera holds afterward is the converged one.
+
+    Frames must keep flowing for the AE algorithm to run, so this retrieves
+    and discards grabs from the same grab session the real capture uses,
+    ahead of the timed recording loop.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while time.monotonic() < deadline and not stop["flag"]:
+        try:
+            exp_done = camera.ExposureAuto.GetValue() == "Off"
+        except Exception:
+            exp_done = True
+        try:
+            gain_done = camera.GainAuto.GetValue() == "Off"
+        except Exception:
+            gain_done = True
+        if exp_done and gain_done:
+            return
+        result = camera.RetrieveResult(1000, pylon.TimeoutHandling_Return)
+        if result.IsValid():
+            result.Release()
+    _log(f"auto-lock: exposure/gain did not converge within {timeout_ms}ms; "
+         "continuing with whatever value it reached")
 
 
 def _list_cameras(pylon) -> int:
@@ -186,17 +219,19 @@ def _capture(pylon, camera, args) -> int:
     width, height = _configure_roi(camera, args.width, args.height)
 
     # Manual exposure for repeatability when given; otherwise auto (rpicam
-    # semantics: 0 = auto).
+    # semantics: 0 = auto). --auto-lock swaps "Continuous" for "Once": pylon
+    # runs the AE algorithm for a few frames then reverts the node to "Off"
+    # on its own, holding whatever value it converged on.
     if args.shutter > 0:
         _set(camera, "ExposureAuto", "Off")
         _set(camera, "ExposureTime", float(args.shutter))
     else:
-        _set(camera, "ExposureAuto", "Continuous")
+        _set(camera, "ExposureAuto", "Once" if args.auto_lock else "Continuous")
     if args.gain > 0:
         _set(camera, "GainAuto", "Off")
         _set(camera, "Gain", float(args.gain))
     else:
-        _set(camera, "GainAuto", "Continuous")
+        _set(camera, "GainAuto", "Once" if args.auto_lock else "Continuous")
 
     _set(camera, "AcquisitionFrameRateEnable", True)
     _set(camera, "AcquisitionFrameRate", float(args.framerate))
@@ -238,11 +273,15 @@ def _capture(pylon, camera, args) -> int:
 
     frames = failed = 0
     first_ts: int | None = None
-    deadline = (time.monotonic() + args.timeout / 1000.0) if args.timeout > 0 else None
     rc = 0
 
     camera.StartGrabbing(pylon.GrabStrategy_OneByOne)
     try:
+        if args.auto_lock:
+            _wait_for_auto_lock(camera, pylon, stop, args.auto_lock_timeout_ms)
+        # Duration counts from here, not from StartGrabbing, so the auto-lock
+        # warm-up doesn't shorten the requested clip length.
+        deadline = (time.monotonic() + args.timeout / 1000.0) if args.timeout > 0 else None
         while camera.IsGrabbing() and not stop["flag"]:
             if deadline is not None and time.monotonic() >= deadline:
                 break
