@@ -35,6 +35,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -306,23 +307,29 @@ tick();
 
 class _Handler(BaseHTTPRequestHandler):
     buffer: FrameBuffer  # set on the server instance, read via self.server
+    # server.catch_all: bool, defaults False (see ThreadingHTTPServer subclass
+    # attribute below) -- captive-portal mode sets it True so any unmatched
+    # path (Apple/Android/Windows captive-portal probes included) gets the
+    # focus page instead of a 404, which is what actually triggers the OS's
+    # "Sign in to Wi-Fi network" prompt.
 
     def log_message(self, *args) -> None:  # quiet; the app logs what it needs
         pass
 
     def do_GET(self) -> None:  # noqa: N802 (stdlib naming)
+        self.server.last_request = time.monotonic()  # type: ignore[attr-defined]
         path = self.path.split("?", 1)[0]
         buffer: FrameBuffer = self.server.buffer  # type: ignore[attr-defined]
-        if path == "/":
+        if path == "/frame.jpg":
+            self._serve_latest_frame(buffer)
+            return
+        if path == "/" or getattr(self.server, "catch_all", False):
             body = _PAGE.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-            return
-        if path == "/frame.jpg":
-            self._serve_latest_frame(buffer)
             return
         self.send_error(404)
 
@@ -365,16 +372,17 @@ def _local_urls(port: int) -> list[str]:
     return urls
 
 
-def run(
-    cfg: FocusConfig, *, basler: BaslerConfig | None = None, dry_run: bool = False
-) -> int:
-    """Start the camera stream and serve the focus-assist page until Ctrl-C."""
+def start_stream(
+    cfg: FocusConfig, basler: BaslerConfig | None = None
+) -> tuple[list[subprocess.Popen], FrameBuffer, threading.Thread]:
+    """Launch the camera pipeline and start splitting its MJPEG output.
+
+    Shared by ``run()`` (interactive/Tailscale use) and ``camrig.captive``
+    (AP/captive-portal fallback) so both drive the same pipeline code.
+    """
     commands = build_focus_commands(cfg, basler)
     rendered = " | ".join(shlex.join(cmd) for cmd in commands)
     log.info("Focus stream: %s", rendered)
-    if dry_run:
-        print(rendered)
-        return 0
 
     buffer = FrameBuffer()
     procs: list[subprocess.Popen] = []
@@ -389,6 +397,30 @@ def run(
         target=_split_mjpeg, args=(procs[-1].stdout, buffer), daemon=True
     )
     reader.start()
+    return procs, buffer, reader
+
+
+def stop_stream(procs: list[subprocess.Popen], buffer: FrameBuffer) -> None:
+    for proc in procs:  # producer first, so consumers see EOF and drain
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+    buffer.close()
+
+
+def run(
+    cfg: FocusConfig, *, basler: BaslerConfig | None = None, dry_run: bool = False
+) -> int:
+    """Start the camera stream and serve the focus-assist page until Ctrl-C."""
+    if dry_run:
+        rendered = " | ".join(shlex.join(cmd) for cmd in build_focus_commands(cfg, basler))
+        print(rendered)
+        return 0
+
+    procs, buffer, _reader = start_stream(cfg, basler)
 
     server = ThreadingHTTPServer(("0.0.0.0", cfg.port), _Handler)
     server.buffer = buffer  # type: ignore[attr-defined]
@@ -406,12 +438,5 @@ def run(
         pass
     finally:
         server.shutdown()
-        for proc in procs:  # producer first, so consumers see EOF and drain
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-        buffer.close()
+        stop_stream(procs, buffer)
     return 0

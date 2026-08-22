@@ -8,6 +8,7 @@ Subcommands:
   motion-view Serve an interactive motion-track viewer for a clip (reach it over Tailscale).
   upload      Flush pending clips to R2 now and prune (manual catch-up).
   focus       Serve a live focus-assist page (manual lens; reach it over Tailscale).
+  captive-portal  AP + captive-portal focus fallback (no internet after boot).
   boot        Boot tasks: NTP sync + catch-up upload + prune.
   shutdown    Upload today, set RTC wake alarm, power off.
   status      Print resolved config + selected storage and exit.
@@ -133,6 +134,12 @@ def _cmd_focus(args, cfg) -> int:
     return run(focus_cfg, basler=cfg.basler, dry_run=args.dry_run)
 
 
+def _cmd_captive(args, cfg) -> int:
+    from . import captive
+
+    return captive.run(cfg.captive, capture=cfg.capture, basler=cfg.basler, dry_run=args.dry_run)
+
+
 def _cmd_boot(args, cfg) -> int:
     from . import boot
     return boot.run(cfg, dry_run=args.dry_run)
@@ -218,6 +225,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--gain", type=float, help="analogue gain; default auto")
     p.add_argument("--dry-run", action="store_true", help="print the command, do not run")
     p.set_defaults(func=_cmd_focus)
+
+    p = sub.add_parser("captive-portal",
+                       help="AP + captive-portal focus fallback (no internet after boot)")
+    p.add_argument("--dry-run", action="store_true", help="print the plan, do not touch the network")
+    p.set_defaults(func=_cmd_captive)
 
     p = sub.add_parser("boot", help="boot tasks: ntp sync + catch-up upload")
     p.add_argument("--dry-run", action="store_true")

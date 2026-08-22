@@ -1,0 +1,9 @@
+[Unit]
+Description=camrig captive-portal AP fallback (focus page, no-internet-after-boot)
+After=cam-boot.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/opt/camrig/venv/bin/camrig captive-portal
+TimeoutStopSec=15

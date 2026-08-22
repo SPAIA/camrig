@@ -24,9 +24,14 @@ if ! id "$CAM_USER" >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "==> Installing system packages (ffmpeg, rclone, python venv, rpicam-apps)"
+echo "==> Installing system packages (ffmpeg, rclone, python venv, rpicam-apps, dnsmasq)"
 apt-get update
-apt-get install -y ffmpeg rclone python3-venv rpicam-apps
+apt-get install -y ffmpeg rclone python3-venv rpicam-apps dnsmasq
+
+# dnsmasq's own systemd service binds 0.0.0.0:53 by default, which would
+# collide with the wlan0-only instance camrig.captive spawns itself on demand
+# (AP/captive-portal fallback). We only ever want that on-demand one running.
+systemctl disable --now dnsmasq >/dev/null 2>&1 || true
 
 echo "==> Creating Python venv at $PREFIX/venv"
 mkdir -p "$PREFIX"

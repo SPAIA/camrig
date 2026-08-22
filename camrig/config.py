@@ -146,6 +146,23 @@ class CloudConfig:
 
 
 @dataclass
+class CaptiveConfig:
+    # Fallback Wi-Fi AP + captive-portal focus page, started by cam-boot.service
+    # when there's no internet after boot (fresh deployment, wrong Wi-Fi creds,
+    # out of range) so a phone can join and reach the focus page directly —
+    # see "Focusing the lens" in README.md.
+    enabled: bool = True
+    ssid: str = "camrig-setup"
+    # Empty = open network. Set a passphrase (8-63 chars) for WPA2-PSK.
+    psk: str = ""
+    ap_ip: str = "10.42.0.1"
+    port: int = 8080
+    # Idle timeout (minutes): torn down this long after the last request, so
+    # it doesn't sit broadcasting/powered for a rig meant to run unattended.
+    timeout_minutes: int = 15
+
+
+@dataclass
 class Config:
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     basler: BaslerConfig = field(default_factory=BaslerConfig)
@@ -157,6 +174,7 @@ class Config:
     led: LedConfig = field(default_factory=LedConfig)
     startup: StartupConfig = field(default_factory=StartupConfig)
     cloud: CloudConfig = field(default_factory=CloudConfig)
+    captive: CaptiveConfig = field(default_factory=CaptiveConfig)
 
     def device_token(self) -> str | None:
         """Read the device bearer token, or None if the file is absent."""

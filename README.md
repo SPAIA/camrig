@@ -246,6 +246,26 @@ Stop with Ctrl-C. Nothing is recorded — it only streams while the page is open
 The camera can't be recording (scheduled capture) at the same time, so run this
 during setup or pause `cam-supervisor` first.
 
+### No-internet fallback: captive-portal AP
+
+If `cam-boot.service` finds no internet at boot (fresh deployment, wrong Wi-Fi
+credentials, out of Tailscale's reach), it starts `cam-captive.service`, which
+stands wlan0 up as its own open AP — SSID **`camrig-setup`** by default — and
+serves the same focus page above to whatever joins it: DNS on the AP is
+wildcarded to the Pi, so most phones/laptops auto-pop a "Sign in to Wi-Fi
+network" prompt straight onto it. Useful for diagnosing/focusing a rig with
+nothing but a phone when there's no laptop or monitor on hand.
+
+It's a no-op if the rig is actually online (re-checks reachability itself
+before touching the network), and tears itself down after `captive.timeout_minutes`
+(15 by default) of inactivity so it doesn't sit broadcasting on a rig meant to
+run unattended. Same camera-exclusivity caveat as `camrig focus` above: it
+needs the camera free, so it may not grab a live view if `cam-supervisor` is
+mid-clip when it starts (it fires early in boot, typically before that).
+Configure SSID/passphrase/timeout in `[captive]` in `config.toml`, or
+`enabled = false` to disable it entirely; run it manually with
+`camrig captive-portal --dry-run` to preview the AP/dnsmasq/stream plan.
+
 ## Verify on the Pi
 
 1. `camrig record --dry-run` — sanity-check the rpicam/ffmpeg command per profile.

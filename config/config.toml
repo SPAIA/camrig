@@ -165,6 +165,23 @@ record = true
 # Delay before the startup clip begins, in seconds.
 delay_seconds = 300
 
+[captive]
+# Fallback Wi-Fi AP + captive-portal focus page, started by cam-boot.service
+# only when there's no internet after boot (fresh deployment, wrong Wi-Fi
+# creds, out of range) -- see "Focusing the lens" in README.md. No-op (never
+# touches the network) if the rig is actually online.
+enabled = true
+# SSID a phone/laptop joins to reach the fallback focus page.
+ssid = "camrig-setup"
+# Empty = open network. Set a passphrase (8-63 chars) for WPA2-PSK.
+psk = ""
+# Static IP the Pi takes on wlan0 while acting as the AP.
+ap_ip = "10.42.0.1"
+port = 8080
+# Idle timeout (minutes) -- torn down this long after the last request, so
+# it doesn't sit broadcasting/powered on a rig meant to run unattended.
+timeout_minutes = 15
+
 [cloud]
 # Outbound WebSocket URL of the Cloudflare Worker device endpoint.
 worker_ws_url = "wss://your-worker.example.workers.dev/device"
