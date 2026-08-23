@@ -117,7 +117,7 @@ def _window_blobs(hits: np.ndarray, min_hits: int, cell: int,
     return blobs
 
 
-def _link_tracks(windows: list[dict], max_dist: float) -> list[dict]:
+def _link_tracks(windows: list[dict], max_dist: float, min_track_len: int = 3) -> list[dict]:
     """Greedy nearest-centroid linking of blobs across consecutive windows."""
     open_tracks: list[dict] = []  # {'path': [(w_idx, blob)], ...}
     done: list[dict] = []
@@ -152,7 +152,11 @@ def _link_tracks(windows: list[dict], max_dist: float) -> list[dict]:
     tracks = []
     for track in done:
         path = track["path"]
-        if len(path) < 2:  # lone blobs are already in windows[]
+        if len(path) < min_track_len:
+            # A 2-point track is mathematically dead straight (net == path_len
+            # for one segment) no matter what made it, so a single spurious
+            # one-hop link between unrelated blobs would always pass a
+            # straightness filter. Require a second linked hop to confirm it.
             continue
         points = [blob["c"] for _, blob in path]
         path_len = sum(math.dist(points[i], points[i + 1])
@@ -175,7 +179,7 @@ def _link_tracks(windows: list[dict], max_dist: float) -> list[dict]:
 def analyse(stream: BinaryIO, width: int, height: int, threshold: int,
             window: int = 6, min_hits: int = 2, cell: int = 8,
             bg_alpha: float = 0.05, min_area: int = 4,
-            max_link_dist: float = 80.0) -> dict:
+            max_link_dist: float = 80.0, min_track_len: int = 3) -> dict:
     """Consume raw gray8 frames from stream; return blobs, tracks and metrics."""
     frame_bytes = width * height
     active_fraction: list[float] = []
@@ -237,12 +241,12 @@ def analyse(stream: BinaryIO, width: int, height: int, threshold: int,
         "params": {
             "threshold": threshold, "window": window, "min_hits": min_hits,
             "cell": cell, "bg_alpha": bg_alpha, "min_area": min_area,
-            "max_link_dist": max_link_dist,
+            "max_link_dist": max_link_dist, "min_track_len": min_track_len,
         },
         "frame_count": len(active_fraction),
         "active_fraction": active_fraction,
         "windows": windows,
-        "tracks": _link_tracks(windows, max_link_dist),
+        "tracks": _link_tracks(windows, max_link_dist, min_track_len),
     }
 
 
@@ -264,6 +268,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="minimum blob area in active pixels (default 4)")
     parser.add_argument("--max-link-dist", type=float, default=80.0,
                         help="max centroid jump in px to link blobs across windows (default 80)")
+    parser.add_argument("--min-track-len", type=int, default=3,
+                        help="min linked points (windows) for a track to be kept; "
+                             "2-point tracks are always perfectly straight so this "
+                             "is the floor for straightness to mean anything (default 3)")
     parser.add_argument("--clip", help="source clip name to embed in the sidecar")
     parser.add_argument("-o", "--output", required=True, help="JSON sidecar path")
     args = parser.parse_args(argv)
@@ -271,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
     result = analyse(sys.stdin.buffer, args.width, args.height, args.threshold,
                      window=args.window, min_hits=args.min_hits, cell=args.cell,
                      bg_alpha=args.bg_alpha, min_area=args.min_area,
-                     max_link_dist=args.max_link_dist)
+                     max_link_dist=args.max_link_dist, min_track_len=args.min_track_len)
     if args.clip:
         result = {"clip": args.clip, **result}
     Path(args.output).write_text(json.dumps(result), encoding="utf-8")
