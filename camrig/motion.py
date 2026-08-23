@@ -117,8 +117,19 @@ def _window_blobs(hits: np.ndarray, min_hits: int, cell: int,
     return blobs
 
 
-def _link_tracks(windows: list[dict], max_dist: float, min_track_len: int = 3) -> list[dict]:
-    """Greedy nearest-centroid linking of blobs across consecutive windows."""
+def _link_tracks(windows: list[dict], max_dist: float, min_track_len: int = 3,
+                 max_accel: float = 40.0) -> list[dict]:
+    """Greedy nearest-centroid linking of blobs across consecutive windows.
+
+    ``max_dist`` alone caps every track at the same flat search radius, so a
+    track that's been crawling at a few px/window can suddenly "teleport" to
+    an unrelated blob that happens to land within max_dist, drawing a bogus
+    straight-line jump. Once a track has an established velocity (its last
+    hop distance), the next hop is additionally capped at that velocity plus
+    ``max_accel``, so a link can only extend as fast as the track has
+    actually been shown to accelerate; a fresh (one-point) track has no
+    velocity yet and still uses the flat ``max_dist``.
+    """
     open_tracks: list[dict] = []  # {'path': [(w_idx, blob)], ...}
     done: list[dict] = []
 
@@ -126,10 +137,17 @@ def _link_tracks(windows: list[dict], max_dist: float, min_track_len: int = 3) -
         blobs = win["blobs"]
         candidates = []
         for ti, track in enumerate(open_tracks):
-            tx, ty = track["path"][-1][1]["c"]
+            path = track["path"]
+            tx, ty = path[-1][1]["c"]
+            if len(path) >= 2:
+                px, py = path[-2][1]["c"]
+                recent_v = math.dist((px, py), (tx, ty))
+                cap = min(max_dist, recent_v + max_accel)
+            else:
+                cap = max_dist
             for bi, blob in enumerate(blobs):
                 d = math.dist((tx, ty), blob["c"])
-                if d <= max_dist:
+                if d <= cap:
                     candidates.append((d, ti, bi))
         candidates.sort(key=lambda t: t[0])
         used_t: set[int] = set()
@@ -179,7 +197,8 @@ def _link_tracks(windows: list[dict], max_dist: float, min_track_len: int = 3) -
 def analyse(stream: BinaryIO, width: int, height: int, threshold: int,
             window: int = 6, min_hits: int = 2, cell: int = 8,
             bg_alpha: float = 0.05, min_area: int = 4,
-            max_link_dist: float = 80.0, min_track_len: int = 3) -> dict:
+            max_link_dist: float = 80.0, min_track_len: int = 3,
+            max_accel: float = 40.0) -> dict:
     """Consume raw gray8 frames from stream; return blobs, tracks and metrics."""
     frame_bytes = width * height
     active_fraction: list[float] = []
@@ -242,11 +261,12 @@ def analyse(stream: BinaryIO, width: int, height: int, threshold: int,
             "threshold": threshold, "window": window, "min_hits": min_hits,
             "cell": cell, "bg_alpha": bg_alpha, "min_area": min_area,
             "max_link_dist": max_link_dist, "min_track_len": min_track_len,
+            "max_accel": max_accel,
         },
         "frame_count": len(active_fraction),
         "active_fraction": active_fraction,
         "windows": windows,
-        "tracks": _link_tracks(windows, max_link_dist, min_track_len),
+        "tracks": _link_tracks(windows, max_link_dist, min_track_len, max_accel),
     }
 
 
@@ -272,6 +292,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="min linked points (windows) for a track to be kept; "
                              "2-point tracks are always perfectly straight so this "
                              "is the floor for straightness to mean anything (default 3)")
+    parser.add_argument("--max-accel", type=float, default=40.0,
+                        help="max px/window a track's speed may increase hop-to-hop, "
+                             "on top of its own last hop distance; stops a slow/still "
+                             "track from teleporting to an unrelated blob within "
+                             "max-link-dist (default 40)")
     parser.add_argument("--clip", help="source clip name to embed in the sidecar")
     parser.add_argument("-o", "--output", required=True, help="JSON sidecar path")
     args = parser.parse_args(argv)
@@ -279,7 +304,8 @@ def main(argv: list[str] | None = None) -> int:
     result = analyse(sys.stdin.buffer, args.width, args.height, args.threshold,
                      window=args.window, min_hits=args.min_hits, cell=args.cell,
                      bg_alpha=args.bg_alpha, min_area=args.min_area,
-                     max_link_dist=args.max_link_dist, min_track_len=args.min_track_len)
+                     max_link_dist=args.max_link_dist, min_track_len=args.min_track_len,
+                     max_accel=args.max_accel)
     if args.clip:
         result = {"clip": args.clip, **result}
     Path(args.output).write_text(json.dumps(result), encoding="utf-8")

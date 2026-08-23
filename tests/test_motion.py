@@ -7,11 +7,12 @@ activity), split body parts merging into one blob, and noise rejection.
 """
 
 import io
+import math
 
 import numpy as np
 import pytest
 
-from camrig.motion import analyse
+from camrig.motion import _link_tracks, analyse
 
 W, H = 96, 64
 BG = 20
@@ -123,6 +124,46 @@ def test_distant_blobs_stay_separate_and_track_independently():
     result = run(frames)
     multi = [w for w in result["windows"] if len(w["blobs"]) >= 2]
     assert multi, "expected windows with two separate blobs"
+
+
+def _blob(x: float, y: float) -> dict:
+    return {"c": [x, y], "area": 5, "chronic": 0.0}
+
+
+def test_velocity_threshold_rejects_teleport_to_unrelated_blob():
+    # A track crawling at 5 px/window, then an unrelated blob spawns 70 px
+    # away next window -- within max_link_dist (80) but far faster than the
+    # track's established 5 px/window speed plus max_accel (40). It should
+    # not be linked into the crawler's track, splitting into two tracks with
+    # no single bogus long jump inside either one.
+    windows = [
+        {"blobs": [_blob(10, 10)]},
+        {"blobs": [_blob(15, 10)]},
+        {"blobs": [_blob(20, 10)]},
+        {"blobs": [_blob(90, 10)]},   # 70 px from (20, 10): unrelated blob
+        {"blobs": [_blob(95, 10)]},
+        {"blobs": [_blob(100, 10)]},
+    ]
+    tracks = _link_tracks(windows, max_dist=80.0, min_track_len=3, max_accel=40.0)
+    assert len(tracks) == 2, "the teleporting jump should split into two tracks"
+    for track in tracks:
+        hops = [math.dist(track["path"][i], track["path"][i + 1])
+                for i in range(len(track["path"]) - 1)]
+        assert max(hops) < 10, f"no hop should include the 70px teleport: {hops}"
+
+
+def test_velocity_threshold_allows_genuine_acceleration():
+    # A track speeding up hop-to-hop within max_accel should still link
+    # into one continuous track, not get cut off.
+    windows = [
+        {"blobs": [_blob(0, 10)]},
+        {"blobs": [_blob(5, 10)]},    # v = 5
+        {"blobs": [_blob(20, 10)]},   # v = 15 (+10, well under max_accel=40)
+        {"blobs": [_blob(50, 10)]},   # v = 30 (+15)
+    ]
+    tracks = _link_tracks(windows, max_dist=80.0, min_track_len=3, max_accel=40.0)
+    assert len(tracks) == 1
+    assert tracks[0]["n"] == 4
 
 
 def test_slow_crawler_visible_via_background_subtraction():
