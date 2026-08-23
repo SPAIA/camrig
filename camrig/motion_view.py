@@ -118,11 +118,11 @@ content="width=device-width,initial-scale=1">
 <div class="hint">
   Left/Right arrow: step 1 frame. Shift+Left/Right: step 10. Space: play/pause.
   Grey boxes are every raw per-window detection; coloured trails are linked
-  tracks passing the threshold sliders, fading after a few seconds.
+  tracks passing the threshold sliders, fading out after a few frames.
 </div>
 <script>
 const FPS = __FPS__;
-const TRAIL_SECONDS = 3.0;
+const TRAIL_SECONDS = 0.8;
 let minStraightness = __MIN_STRAIGHTNESS__;
 let maxChronic = __MAX_CHRONIC__;
 let showTrails = true;
@@ -170,14 +170,16 @@ function draw(wIdx) {
     const idxStart = Math.max(0, idxEnd - trailWindows + 1);
     const pts = t.path.slice(idxStart, idxEnd + 1);
     const color = PALETTE[ti % PALETTE.length];
-    if (pts.length > 1) {
+    ctx.lineWidth = 1;
+    for (let i = 1; i < pts.length; i++) {
       ctx.strokeStyle = color;
-      ctx.lineWidth = 1;
+      ctx.globalAlpha = i / (pts.length - 1);
       ctx.beginPath();
-      ctx.moveTo(pts[0][0], pts[0][1]);
-      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.moveTo(pts[i - 1][0], pts[i - 1][1]);
+      ctx.lineTo(pts[i][0], pts[i][1]);
       ctx.stroke();
     }
+    ctx.globalAlpha = 1;
     const [cx, cy] = pts[pts.length - 1];
     ctx.fillStyle = color;
     ctx.beginPath();
