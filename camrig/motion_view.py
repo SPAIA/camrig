@@ -165,8 +165,9 @@ function draw(wIdx) {
   const trailWindows = Math.max(1, Math.round(TRAIL_SECONDS * FPS / windowFrames));
   motion.tracks.forEach((t, ti) => {
     if (t.straightness < minStraightness || t.chronic > maxChronic) return;
-    if (wIdx < t.w0) return;
-    const idxEnd = Math.min(wIdx - t.w0, t.n - 1);
+    const relIdx = wIdx - t.w0;
+    if (relIdx < 0 || relIdx > t.n - 1) return;
+    const idxEnd = relIdx;
     const idxStart = Math.max(0, idxEnd - trailWindows + 1);
     const pts = t.path.slice(idxStart, idxEnd + 1);
     const color = PALETTE[ti % PALETTE.length];

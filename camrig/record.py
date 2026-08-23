@@ -280,6 +280,10 @@ def build_commands(
         ]
         ffmpeg = [
             "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+            # Raw MJPEG has no embedded timing; without -r the demuxer
+            # defaults to 25fps, understamping every frame and playing the
+            # clip back slower than real time.
+            "-r", str(cfg.framerate),
             "-f", "mjpeg", "-i", "-",
             "-c", "copy",
             # Explicit container: the .part staging name hides the .mkv suffix.
