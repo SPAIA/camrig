@@ -29,17 +29,28 @@ target image if a stream fails to start.
 
 from __future__ import annotations
 
+import html
 import logging
+import os
 import shlex
 import socket
 import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+import urllib.parse
+from dataclasses import dataclass, fields as dataclass_fields
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .config import BaslerConfig, CaptureConfig
+from .config import (
+    BaslerConfig,
+    CaptureConfig,
+    Config,
+    DEFAULT_CONFIG_PATH,
+    format_toml_scalar,
+    load_config,
+    set_config_value,
+)
 from .record import mjpeg_qv
 
 log = logging.getLogger("camrig.focus")
@@ -218,6 +229,9 @@ content="width=device-width,initial-scale=1">
     padding:.35rem .6rem;cursor:pointer;font-size:12px}
   button.on{background:#1f7a46;border-color:#2b9a58}
   .hint{padding:.5rem .9rem;color:#8b93a1;font-size:12px}
+  a.settings-link{color:#8b93a1;font-size:12px;text-decoration:none;
+    border:1px solid #333;border-radius:6px;padding:.35rem .6rem}
+  a.settings-link:hover{color:#e6e9ef;border-color:#555}
 </style></head>
 <body>
 <header>
@@ -229,6 +243,7 @@ content="width=device-width,initial-scale=1">
   <button id="beep">audio: off</button>
   <label>ROI <input type="range" id="roi" min="10" max="90" value="40"></label>
   <span class="peak" id="fps">-- fps</span>
+  <a class="settings-link" href="/settings">settings</a>
 </header>
 <div class="wrap"><canvas id="view"></canvas><div class="roi" id="roibox"></div></div>
 <div class="hint">Turn the lens ring until the score peaks. Sharper = higher.
@@ -305,6 +320,145 @@ tick();
 """
 
 
+_SUPERVISOR_SERVICE = "cam-supervisor"
+
+_SETTINGS_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport"
+content="width=device-width,initial-scale=1">
+<title>camrig settings</title>
+<style>
+  :root{color-scheme:dark}
+  body{margin:0;background:#0b0d10;color:#e6e9ef;
+    font:14px/1.4 -apple-system,Segoe UI,Roboto,sans-serif}
+  header{display:flex;gap:1rem;align-items:center;
+    padding:.6rem .9rem;background:#12161c;border-bottom:1px solid #222}
+  h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.3px;flex:1}
+  a{color:#8b93a1;font-size:12px;text-decoration:none;
+    border:1px solid #333;border-radius:6px;padding:.35rem .6rem}
+  a:hover{color:#e6e9ef;border-color:#555}
+  main{max-width:640px;margin:0 auto;padding:1rem}
+  .banner{padding:.6rem .9rem;border-radius:6px;margin-bottom:1rem;font-size:13px}
+  .banner.ok{background:#123a24;border:1px solid #1f7a46;color:#8fe3b3}
+  .banner.err{background:#3a1414;border:1px solid #7a1f1f;color:#e38f8f}
+  fieldset{border:1px solid #222;border-radius:8px;margin-bottom:1rem;padding:.6rem .9rem}
+  legend{padding:0 .4rem;color:#aeb6c2;font-size:12px;letter-spacing:.3px;
+    text-transform:uppercase}
+  .row{display:flex;align-items:center;justify-content:space-between;
+    gap:1rem;padding:.3rem 0;border-bottom:1px solid #181c22}
+  .row:last-child{border-bottom:none}
+  .row span{color:#c7cdd6;font-size:13px}
+  .row input[type=text],.row input[type=number]{
+    background:#1c222b;color:#e6e9ef;border:1px solid #333;border-radius:6px;
+    padding:.3rem .5rem;font-size:13px;width:14rem;max-width:55%}
+  .row input[type=checkbox]{width:18px;height:18px}
+  .actions{position:sticky;bottom:0;background:#0b0d10;padding:.8rem 0;
+    border-top:1px solid #222}
+  button{background:#1f7a46;color:#e6e9ef;border:1px solid #2b9a58;border-radius:6px;
+    padding:.55rem 1rem;cursor:pointer;font-size:14px;width:100%}
+  .hint{padding:.4rem 0 .8rem;color:#8b93a1;font-size:12px}
+</style></head>
+<body>
+<header><h1>camrig settings</h1><a href="/">&larr; focus</a></header>
+<main>
+__BANNER__
+<div class="hint">Saving writes these values to config.toml and restarts
+__SERVICE__, which is what actually reads them.</div>
+<form method="POST" action="/settings">
+__FIELDSETS__
+<div class="actions"><button type="submit">Save &amp; restart __SERVICE__</button></div>
+</form>
+</main>
+</body></html>
+"""
+
+
+def _settings_input(name: str, value: object, type_name: str) -> str:
+    if type_name == "bool":
+        checked = "checked" if value else ""
+        return f'<input type="checkbox" name="{html.escape(name)}" {checked}>'
+    if type_name in ("int", "float"):
+        step = "any" if type_name == "float" else "1"
+        return (f'<input type="number" step="{step}" name="{html.escape(name)}" '
+                f'value="{html.escape(str(value))}">')
+    return (f'<input type="text" name="{html.escape(name)}" '
+            f'value="{html.escape(str(value))}">')
+
+
+def render_settings_page(cfg: Config, message: str | None = None, error: bool = False) -> bytes:
+    """Render the settings form from the live ``Config`` (all sections/fields)."""
+    banner = ""
+    if message:
+        cls = "err" if error else "ok"
+        banner = f'<div class="banner {cls}">{html.escape(message)}</div>'
+
+    fieldsets = []
+    for sfield in dataclass_fields(Config):
+        section_name = sfield.name
+        section_obj = getattr(cfg, section_name)
+        rows = []
+        for kfield in dataclass_fields(section_obj):
+            name = f"{section_name}.{kfield.name}"
+            value = getattr(section_obj, kfield.name)
+            input_html = _settings_input(name, value, kfield.type)
+            rows.append(f'<label class="row"><span>{html.escape(kfield.name)}</span>'
+                        f'{input_html}</label>')
+        fieldsets.append(f'<fieldset><legend>{html.escape(section_name)}</legend>'
+                          f'{"".join(rows)}</fieldset>')
+
+    page = (_SETTINGS_PAGE
+            .replace("__BANNER__", banner)
+            .replace("__FIELDSETS__", "".join(fieldsets))
+            .replace("__SERVICE__", _SUPERVISOR_SERVICE))
+    return page.encode("utf-8")
+
+
+def apply_settings_form(config_path: str | os.PathLike[str], form: dict[str, list[str]]) -> list[str]:
+    """Write submitted form fields into ``config_path``. Returns error strings, if any."""
+    cfg = load_config(config_path)
+    errors: list[str] = []
+    for sfield in dataclass_fields(Config):
+        section_name = sfield.name
+        section_obj = getattr(cfg, section_name)
+        for kfield in dataclass_fields(section_obj):
+            name = f"{section_name}.{kfield.name}"
+            type_name = kfield.type
+            if type_name == "bool":
+                py_value: object = name in form
+            else:
+                values = form.get(name)
+                if not values:
+                    continue
+                raw = values[0]
+                try:
+                    py_value = int(raw) if type_name == "int" else (
+                        float(raw) if type_name == "float" else raw
+                    )
+                except ValueError:
+                    errors.append(f"{name}: invalid value {raw!r}")
+                    continue
+            toml_value = format_toml_scalar(py_value, type_name)
+            try:
+                set_config_value(config_path, section_name, kfield.name, toml_value)
+            except OSError as exc:
+                errors.append(f"{name}: could not write config ({exc})")
+    return errors
+
+
+def restart_supervisor() -> str | None:
+    """Restart the capture service so it picks up the new config. Returns an error, if any."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "restart", _SUPERVISOR_SERVICE],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"saved, but restarting {_SUPERVISOR_SERVICE} failed: {exc}"
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        return f"saved, but restarting {_SUPERVISOR_SERVICE} failed: {detail}"
+    return None
+
+
 class _Handler(BaseHTTPRequestHandler):
     buffer: FrameBuffer  # set on the server instance, read via self.server
     # server.catch_all: bool, defaults False (see ThreadingHTTPServer subclass
@@ -323,6 +477,10 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/frame.jpg":
             self._serve_latest_frame(buffer)
             return
+        if path == "/settings":
+            config_path = self._config_path()
+            self._send_html(render_settings_page(load_config(config_path)))
+            return
         if path == "/" or getattr(self.server, "catch_all", False):
             body = _PAGE.encode("utf-8")
             self.send_response(200)
@@ -332,6 +490,37 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         self.send_error(404)
+
+    def do_POST(self) -> None:  # noqa: N802 (stdlib naming)
+        self.server.last_request = time.monotonic()  # type: ignore[attr-defined]
+        path = self.path.split("?", 1)[0]
+        if path != "/settings":
+            self.send_error(404)
+            return
+        config_path = self._config_path()
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw_body = self.rfile.read(length).decode("utf-8") if length else ""
+        form = urllib.parse.parse_qs(raw_body, keep_blank_values=True)
+
+        errors = apply_settings_form(config_path, form)
+        if not errors:
+            restart_error = restart_supervisor()
+            if restart_error:
+                errors.append(restart_error)
+
+        message = f"Saved and restarted {_SUPERVISOR_SERVICE}." if not errors else " / ".join(errors)
+        cfg = load_config(config_path)
+        self._send_html(render_settings_page(cfg, message=message, error=bool(errors)))
+
+    def _config_path(self) -> str | os.PathLike[str]:
+        return getattr(self.server, "config_path", DEFAULT_CONFIG_PATH)  # type: ignore[attr-defined]
+
+    def _send_html(self, body: bytes) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_latest_frame(self, buffer: FrameBuffer) -> None:
         # Long-poll: wait for a fresh frame so the browser advances one per request.
@@ -412,7 +601,11 @@ def stop_stream(procs: list[subprocess.Popen], buffer: FrameBuffer) -> None:
 
 
 def run(
-    cfg: FocusConfig, *, basler: BaslerConfig | None = None, dry_run: bool = False
+    cfg: FocusConfig,
+    *,
+    basler: BaslerConfig | None = None,
+    dry_run: bool = False,
+    config_path: str | os.PathLike[str] | None = None,
 ) -> int:
     """Start the camera stream and serve the focus-assist page until Ctrl-C."""
     if dry_run:
@@ -424,6 +617,7 @@ def run(
 
     server = ThreadingHTTPServer(("0.0.0.0", cfg.port), _Handler)
     server.buffer = buffer  # type: ignore[attr-defined]
+    server.config_path = config_path if config_path is not None else DEFAULT_CONFIG_PATH  # type: ignore[attr-defined]
     server.daemon_threads = True
 
     print(f"\ncamrig focus — {cfg.camera} {cfg.width}x{cfg.height}@{cfg.framerate} q{cfg.quality}")

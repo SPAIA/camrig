@@ -21,6 +21,7 @@ wlan0 only (the same approach balena's wifi-connect and comitup use).
 from __future__ import annotations
 
 import logging
+import os
 import shlex
 import socket
 import subprocess
@@ -28,7 +29,7 @@ import threading
 import time
 from http.server import ThreadingHTTPServer
 
-from .config import BaslerConfig, CaptiveConfig, CaptureConfig
+from .config import BaslerConfig, CaptiveConfig, CaptureConfig, DEFAULT_CONFIG_PATH
 from .focus import FocusConfig, _Handler, build_focus_commands, start_stream, stop_stream
 
 log = logging.getLogger("camrig.captive")
@@ -113,6 +114,7 @@ def run(
     capture: CaptureConfig,
     basler: BaslerConfig | None = None,
     dry_run: bool = False,
+    config_path: str | os.PathLike[str] | None = None,
 ) -> int:
     focus_cfg = FocusConfig.from_capture(capture, port=cfg.port)
 
@@ -133,6 +135,7 @@ def run(
 
     server = ThreadingHTTPServer(("0.0.0.0", cfg.port), _Handler)
     server.buffer = buffer  # type: ignore[attr-defined]
+    server.config_path = config_path if config_path is not None else DEFAULT_CONFIG_PATH  # type: ignore[attr-defined]
     server.catch_all = True  # type: ignore[attr-defined]
     server.last_request = time.monotonic()  # type: ignore[attr-defined]
     server.daemon_threads = True

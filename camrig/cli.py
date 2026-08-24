@@ -118,6 +118,8 @@ def _cmd_upload(args, cfg) -> int:
 
 
 def _cmd_focus(args, cfg) -> int:
+    from pathlib import Path
+
     from .focus import FocusConfig, run
 
     focus_cfg = FocusConfig.from_capture(
@@ -131,13 +133,20 @@ def _cmd_focus(args, cfg) -> int:
         gain=args.gain,
         camera=args.camera,
     )
-    return run(focus_cfg, basler=cfg.basler, dry_run=args.dry_run)
+    config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
+    return run(focus_cfg, basler=cfg.basler, dry_run=args.dry_run, config_path=config_path)
 
 
 def _cmd_captive(args, cfg) -> int:
+    from pathlib import Path
+
     from . import captive
 
-    return captive.run(cfg.captive, capture=cfg.capture, basler=cfg.basler, dry_run=args.dry_run)
+    config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
+    return captive.run(
+        cfg.captive, capture=cfg.capture, basler=cfg.basler, dry_run=args.dry_run,
+        config_path=config_path,
+    )
 
 
 def _cmd_boot(args, cfg) -> int:

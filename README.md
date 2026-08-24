@@ -246,6 +246,16 @@ Stop with Ctrl-C. Nothing is recorded — it only streams while the page is open
 The camera can't be recording (scheduled capture) at the same time, so run this
 during setup or pause `cam-supervisor` first.
 
+A **settings** link in the page header opens `/settings`: every value in
+`config.toml`, grouped by section, in an editable form. Saving writes the
+changes back to the config file (via the same targeted line-patcher `camrig`
+uses internally, so comments and formatting elsewhere in the file are left
+alone) and runs `systemctl restart cam-supervisor` so the change takes effect
+immediately. If the restart fails (e.g. no permission to run `systemctl` from
+wherever `camrig focus`/`captive-portal` is running), the values are still
+saved — the page reports the restart error and you can restart the service
+yourself.
+
 ### No-internet fallback: captive-portal AP
 
 If `cam-boot.service` finds no internet at boot (fresh deployment, wrong Wi-Fi

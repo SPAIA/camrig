@@ -8,6 +8,7 @@ defaults defined here, so a partial config file is always valid.
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from dataclasses import dataclass, field, fields, is_dataclass
@@ -249,3 +250,19 @@ def set_config_value(path: str | os.PathLike[str], section: str, key: str, value
             lines.insert(section_end, key_line)
 
     path.write_text("".join(lines), encoding="utf-8")
+
+
+def format_toml_scalar(value: Any, type_name: str) -> str:
+    """Render a Python value as a TOML scalar literal, for ``set_config_value``.
+
+    ``type_name`` is a dataclass field's ``.type`` (a string, since every
+    config dataclass module uses ``from __future__ import annotations``):
+    "bool", "int", "float", or "str".
+    """
+    if type_name == "bool":
+        return "true" if value else "false"
+    if type_name == "int":
+        return str(int(value))
+    if type_name == "float":
+        return repr(float(value))
+    return json.dumps(str(value))
