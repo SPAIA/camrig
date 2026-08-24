@@ -445,10 +445,19 @@ def apply_settings_form(config_path: str | os.PathLike[str], form: dict[str, lis
 
 
 def restart_supervisor() -> str | None:
-    """Restart the capture service so it picks up the new config. Returns an error, if any."""
+    """Restart the capture service so it picks up the new config. Returns an error, if any.
+
+    Runs via ``sudo -n`` since ``camrig focus`` is normally launched by hand as
+    the unprivileged capture user ($CAM_USER), which has no standing
+    permission to manage systemd units -- a bare ``systemctl restart`` would
+    otherwise block on an interactive polkit prompt that can never be
+    answered from here. setup/install.sh installs a sudoers rule scoped to
+    exactly this command. Run as root already (cam-captive.service), sudo is
+    a no-op passthrough.
+    """
     try:
         result = subprocess.run(
-            ["systemctl", "restart", _SUPERVISOR_SERVICE],
+            ["sudo", "-n", "systemctl", "restart", _SUPERVISOR_SERVICE],
             capture_output=True, text=True, timeout=15,
         )
     except (OSError, subprocess.SubprocessError) as exc:

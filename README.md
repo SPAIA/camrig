@@ -250,11 +250,22 @@ A **settings** link in the page header opens `/settings`: every value in
 `config.toml`, grouped by section, in an editable form. Saving writes the
 changes back to the config file (via the same targeted line-patcher `camrig`
 uses internally, so comments and formatting elsewhere in the file are left
-alone) and runs `systemctl restart cam-supervisor` so the change takes effect
-immediately. If the restart fails (e.g. no permission to run `systemctl` from
-wherever `camrig focus`/`captive-portal` is running), the values are still
-saved — the page reports the restart error and you can restart the service
-yourself.
+alone) and runs `sudo -n systemctl restart cam-supervisor` so the change takes
+effect immediately. `setup/install.sh` installs a sudoers rule scoped to
+exactly that one command so `$CAM_USER` can do it without a password prompt
+(a bare `systemctl restart` from a non-root user otherwise blocks on an
+interactive polkit prompt that a headless save can never answer). On a rig
+set up before this existed, re-run `setup/install.sh` to add it, or add
+manually:
+
+```
+echo "spaia ALL=(root) NOPASSWD: $(command -v systemctl) restart cam-supervisor" \
+  | sudo tee /etc/sudoers.d/camrig-supervisor-restart && sudo chmod 0440 /etc/sudoers.d/camrig-supervisor-restart
+```
+
+If the restart still fails for some other reason, the config values are
+still saved — the page reports the restart error and you can restart the
+service yourself.
 
 ### No-internet fallback: captive-portal AP
 

@@ -100,6 +100,24 @@ systemctl enable --now cam-supervisor.service
 systemctl enable --now cam-boot.service
 systemctl enable --now cam-shutdown.timer
 
+echo "==> Allowing $CAM_USER to restart cam-supervisor without a password"
+# camrig focus / captive-portal's /settings page saves config.toml then runs
+# `sudo -n systemctl restart cam-supervisor` so the change takes effect; that
+# only works non-interactively if $CAM_USER can do exactly that one command
+# without a password prompt. Scoped to this single command line, nothing else.
+SYSTEMCTL_BIN="$(command -v systemctl)"
+SUDOERS_FILE=/etc/sudoers.d/camrig-supervisor-restart
+cat > "$SUDOERS_FILE.tmp" <<EOF
+$CAM_USER ALL=(root) NOPASSWD: $SYSTEMCTL_BIN restart cam-supervisor
+EOF
+chmod 0440 "$SUDOERS_FILE.tmp"
+if visudo -cf "$SUDOERS_FILE.tmp"; then
+  mv "$SUDOERS_FILE.tmp" "$SUDOERS_FILE"
+else
+  echo "    sudoers syntax check failed; not installing $SUDOERS_FILE" >&2
+  rm -f "$SUDOERS_FILE.tmp"
+fi
+
 echo "==> Setting EEPROM POWER_OFF_ON_HALT for RTC wake"
 "$REPO_DIR/setup/set_eeprom.sh" || echo "    (EEPROM step skipped/failed — run setup/set_eeprom.sh manually)"
 
