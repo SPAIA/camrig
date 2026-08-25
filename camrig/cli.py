@@ -134,7 +134,10 @@ def _cmd_focus(args, cfg) -> int:
         camera=args.camera,
     )
     config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
-    return run(focus_cfg, basler=cfg.basler, dry_run=args.dry_run, config_path=config_path)
+    return run(
+        focus_cfg, basler=cfg.basler, full_cfg=cfg,
+        dry_run=args.dry_run, config_path=config_path,
+    )
 
 
 def _cmd_captive(args, cfg) -> int:
@@ -144,8 +147,8 @@ def _cmd_captive(args, cfg) -> int:
 
     config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
     return captive.run(
-        cfg.captive, capture=cfg.capture, basler=cfg.basler, dry_run=args.dry_run,
-        config_path=config_path,
+        cfg.captive, capture=cfg.capture, basler=cfg.basler, full_cfg=cfg,
+        dry_run=args.dry_run, config_path=config_path,
     )
 
 

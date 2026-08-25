@@ -29,7 +29,7 @@ import threading
 import time
 from http.server import ThreadingHTTPServer
 
-from .config import BaslerConfig, CaptiveConfig, CaptureConfig, DEFAULT_CONFIG_PATH
+from .config import BaslerConfig, CaptiveConfig, CaptureConfig, Config, DEFAULT_CONFIG_PATH
 from .focus import FocusConfig, _Handler, build_focus_commands, start_stream, stop_stream
 
 log = logging.getLogger("camrig.captive")
@@ -113,6 +113,7 @@ def run(
     *,
     capture: CaptureConfig,
     basler: BaslerConfig | None = None,
+    full_cfg: Config | None = None,
     dry_run: bool = False,
     config_path: str | os.PathLike[str] | None = None,
 ) -> int:
@@ -138,6 +139,10 @@ def run(
     server.config_path = config_path if config_path is not None else DEFAULT_CONFIG_PATH  # type: ignore[attr-defined]
     server.catch_all = True  # type: ignore[attr-defined]
     server.last_request = time.monotonic()  # type: ignore[attr-defined]
+    server.full_cfg = full_cfg  # type: ignore[attr-defined]
+    server.focus_cfg = focus_cfg  # type: ignore[attr-defined]
+    server.procs = procs  # type: ignore[attr-defined]
+    server.stream_lock = threading.Lock()  # type: ignore[attr-defined]
     server.daemon_threads = True
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
@@ -156,7 +161,9 @@ def run(
         log.info("Idle timeout (%d min); tearing down captive portal", cfg.timeout_minutes)
     finally:
         server.shutdown()
-        stop_stream(procs, buffer)
+        # Not the local procs/buffer: a completed recording swaps these on
+        # the server when it restarts the stream (see _Handler._handle_record).
+        stop_stream(server.procs, server.buffer)  # type: ignore[attr-defined]
         stop_dnsmasq(dnsmasq_proc)
         stop_ap()
     return 0

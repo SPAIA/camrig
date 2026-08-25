@@ -51,7 +51,8 @@ from .config import (
     load_config,
     set_config_value,
 )
-from .record import mjpeg_qv
+from . import storage
+from .record import mjpeg_qv, record_clip
 
 log = logging.getLogger("camrig.focus")
 
@@ -228,6 +229,10 @@ content="width=device-width,initial-scale=1">
   button{background:#232a34;color:#e6e9ef;border:1px solid #333;border-radius:6px;
     padding:.35rem .6rem;cursor:pointer;font-size:12px}
   button.on{background:#1f7a46;border-color:#2b9a58}
+  button.rec{background:#7a1f1f;border-color:#a83232}
+  button:disabled{opacity:.6;cursor:default}
+  input[type=number]{width:4.5rem;background:#1c222b;color:#e6e9ef;border:1px solid #333;
+    border-radius:6px;padding:.3rem .4rem;font-size:12px}
   .hint{padding:.5rem .9rem;color:#8b93a1;font-size:12px}
   a.settings-link{color:#8b93a1;font-size:12px;text-decoration:none;
     border:1px solid #333;border-radius:6px;padding:.35rem .6rem}
@@ -243,6 +248,9 @@ content="width=device-width,initial-scale=1">
   <button id="beep">audio: off</button>
   <label>ROI <input type="range" id="roi" min="10" max="90" value="40"></label>
   <span class="peak" id="fps">-- fps</span>
+  <label>rec <input type="number" id="recSeconds" min="1" max="3600" placeholder="__CLIP_SECONDS__"></label>
+  <button id="rec">&#9679; record</button>
+  <span class="peak" id="recStatus"></span>
   <a class="settings-link" href="/settings">settings</a>
 </header>
 <div class="wrap"><canvas id="view"></canvas><div class="roi" id="roibox"></div></div>
@@ -268,6 +276,24 @@ document.getElementById('beep').onclick=(e)=>{
     e.target.classList.remove('on'); e.target.textContent='audio: off'; }
 };
 document.getElementById('reset').onclick=()=>{peak=0;};
+
+let recording=false;
+const recBtn=document.getElementById('rec'), recSeconds=document.getElementById('recSeconds'),
+      recStatus=document.getElementById('recStatus');
+recBtn.onclick=async ()=>{
+  if(recording) return;
+  recording=true; recBtn.disabled=true; recBtn.classList.add('rec');
+  recBtn.textContent='recording…'; recStatus.textContent='';
+  try{
+    const body='seconds='+encodeURIComponent(recSeconds.value||'');
+    const res=await fetch('/record',{method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'}, body});
+    const text=await res.text();
+    recStatus.textContent=text;
+  }catch(e){ recStatus.textContent='error: '+e; }
+  recording=false; recBtn.disabled=false; recBtn.classList.remove('rec');
+  recBtn.textContent='● record';
+};
 
 function placeRoiBox(){
   const r=view.getBoundingClientRect(), f=roi.value/100, w=r.width*f, h=r.height*f;
@@ -313,11 +339,19 @@ img.onload=()=>{
   requestAnimationFrame(tick);
 };
 img.onerror=()=>setTimeout(tick,500);
-function tick(){ img.src='/frame.jpg?t='+performance.now(); }
+function tick(){
+  if(recording){ setTimeout(tick,500); return; }
+  img.src='/frame.jpg?t='+performance.now();
+}
 tick();
 </script>
 </body></html>
 """
+
+
+def render_focus_page(clip_seconds: int) -> bytes:
+    """Focus page with the record button's default-duration placeholder filled in."""
+    return _PAGE.replace("__CLIP_SECONDS__", str(clip_seconds)).encode("utf-8")
 
 
 _SUPERVISOR_SERVICE = "cam-supervisor"
@@ -491,7 +525,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_html(render_settings_page(load_config(config_path)))
             return
         if path == "/" or getattr(self.server, "catch_all", False):
-            body = _PAGE.encode("utf-8")
+            full_cfg: Config | None = getattr(self.server, "full_cfg", None)
+            clip_seconds = full_cfg.capture.clip_seconds if full_cfg else CaptureConfig().clip_seconds
+            body = render_focus_page(clip_seconds)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -503,6 +539,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 (stdlib naming)
         self.server.last_request = time.monotonic()  # type: ignore[attr-defined]
         path = self.path.split("?", 1)[0]
+        if path == "/record":
+            self._handle_record()
+            return
         if path != "/settings":
             self.send_error(404)
             return
@@ -520,6 +559,59 @@ class _Handler(BaseHTTPRequestHandler):
         message = f"Saved and restarted {_SUPERVISOR_SERVICE}." if not errors else " / ".join(errors)
         cfg = load_config(config_path)
         self._send_html(render_settings_page(cfg, message=message, error=bool(errors)))
+
+    def _handle_record(self) -> None:
+        """Stop the live stream, record one clip with the real capture settings, restart the stream.
+
+        Runs on this request's own thread (ThreadingHTTPServer), so it blocks
+        only this connection for the clip's duration -- other requests (the
+        settings page, other focus tabs) are served normally throughout.
+        """
+        server = self.server
+        full_cfg: Config | None = getattr(server, "full_cfg", None)
+        if full_cfg is None:
+            self.send_error(501, "recording not available (no config)")
+            return
+
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw_body = self.rfile.read(length).decode("utf-8") if length else ""
+        form = urllib.parse.parse_qs(raw_body, keep_blank_values=True)
+        raw_seconds = (form.get("seconds", [""])[0] or "").strip()
+        try:
+            seconds = int(raw_seconds) if raw_seconds else None
+        except ValueError:
+            self.send_error(400, "invalid seconds")
+            return
+
+        stream_lock: threading.Lock = server.stream_lock  # type: ignore[attr-defined]
+        if not stream_lock.acquire(blocking=False):
+            self.send_error(409, "already recording")
+            return
+        try:
+            stop_stream(server.procs, server.buffer)  # type: ignore[attr-defined]
+            try:
+                base = storage.select_base_dir(full_cfg)
+                day = storage.day_dir(base)
+                paths = record_clip(
+                    full_cfg.capture, day, trigger="triggered",
+                    duration_seconds=seconds, basler=full_cfg.basler,
+                )
+                result = f"Saved {paths.video.name}".encode("utf-8")
+                status = 200
+            except (RuntimeError, OSError) as exc:
+                result = f"recording failed: {exc}".encode("utf-8")
+                status = 500
+            finally:
+                procs, buffer, reader = start_stream(server.focus_cfg, full_cfg.basler)  # type: ignore[attr-defined]
+                server.procs, server.buffer, server._reader = procs, buffer, reader  # type: ignore[attr-defined]
+        finally:
+            stream_lock.release()
+
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(result)))
+        self.end_headers()
+        self.wfile.write(result)
 
     def _config_path(self) -> str | os.PathLike[str]:
         return getattr(self.server, "config_path", DEFAULT_CONFIG_PATH)  # type: ignore[attr-defined]
@@ -613,10 +705,17 @@ def run(
     cfg: FocusConfig,
     *,
     basler: BaslerConfig | None = None,
+    full_cfg: Config | None = None,
     dry_run: bool = False,
     config_path: str | os.PathLike[str] | None = None,
 ) -> int:
-    """Start the camera stream and serve the focus-assist page until Ctrl-C."""
+    """Start the camera stream and serve the focus-assist page until Ctrl-C.
+
+    ``full_cfg``, when given, is the whole resolved ``Config`` (not just the
+    focus-stream settings) -- it's what the page's "record" button uses to run
+    a real clip (real capture profile/resolution, real storage location)
+    without the caller having to duplicate that wiring.
+    """
     if dry_run:
         rendered = " | ".join(shlex.join(cmd) for cmd in build_focus_commands(cfg, basler))
         print(rendered)
@@ -627,6 +726,10 @@ def run(
     server = ThreadingHTTPServer(("0.0.0.0", cfg.port), _Handler)
     server.buffer = buffer  # type: ignore[attr-defined]
     server.config_path = config_path if config_path is not None else DEFAULT_CONFIG_PATH  # type: ignore[attr-defined]
+    server.full_cfg = full_cfg  # type: ignore[attr-defined]
+    server.focus_cfg = cfg  # type: ignore[attr-defined]
+    server.procs = procs  # type: ignore[attr-defined]
+    server.stream_lock = threading.Lock()  # type: ignore[attr-defined]
     server.daemon_threads = True
 
     print(f"\ncamrig focus — {cfg.camera} {cfg.width}x{cfg.height}@{cfg.framerate} q{cfg.quality}")
@@ -641,5 +744,7 @@ def run(
         pass
     finally:
         server.shutdown()
-        stop_stream(procs, buffer)
+        # Not the local procs/buffer: a completed recording swaps these on
+        # the server when it restarts the stream (see _Handler._handle_record).
+        stop_stream(server.procs, server.buffer)  # type: ignore[attr-defined]
     return 0

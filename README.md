@@ -242,9 +242,15 @@ whose pitch rises as focus improves, so you can watch the lens instead of the
 screen. The score is a variance-of-Laplacian sharpness metric computed in the
 browser; denoise is forced off while focusing so softness can't be hidden.
 
-Stop with Ctrl-C. Nothing is recorded — it only streams while the page is open.
-The camera can't be recording (scheduled capture) at the same time, so run this
-during setup or pause `cam-supervisor` first.
+Stop with Ctrl-C. The page only streams while open — it doesn't record on its
+own, except via the **record** button in the header: set a duration (defaults
+to `capture.clip_seconds`) and it briefly pauses the live view, records one
+real clip with the actual capture settings (profile, resolution, storage
+location — same as a scheduled clip, tagged `triggered`), then resumes
+streaming. Handy for grabbing a real test clip right after focusing without
+leaving the page. The camera can't be recording (scheduled capture) at the
+same time as any of this, so run `camrig focus`/the record button during setup
+or pause `cam-supervisor` first.
 
 A **settings** link in the page header opens `/settings`: every value in
 `config.toml`, grouped by section, in an editable form. Saving writes the
@@ -276,6 +282,12 @@ serves the same focus page above to whatever joins it: DNS on the AP is
 wildcarded to the Pi, so most phones/laptops auto-pop a "Sign in to Wi-Fi
 network" prompt straight onto it. Useful for diagnosing/focusing a rig with
 nothing but a phone when there's no laptop or monitor on hand.
+
+macOS and iOS don't reliably auto-pop that sign-in prompt (a long-standing
+quirk of Apple's captive-portal detection, not something fixable on the AP
+side). If it doesn't appear after joining `camrig-setup`, open a browser and
+go to `http://10.42.0.1:8080/` directly — that's the AP's fixed IP, so it
+always works.
 
 It's a no-op if the rig is actually online (re-checks reachability itself
 before touching the network), and tears itself down after `captive.timeout_minutes`
