@@ -57,6 +57,7 @@ from .record import mjpeg_qv, record_clip
 log = logging.getLogger("camrig.focus")
 
 _SOI = b"\xff\xd8"  # JPEG start-of-image marker
+_POLL_SECONDS = 5
 
 
 @dataclass
@@ -71,6 +72,10 @@ class FocusConfig:
     port: int = 8080
     shutter_us: int = 0  # 0 = auto-expose (convenient while setting up in varied light)
     gain: float = 0.0     # 0 = auto
+    # Stop (and release the camera) after this many minutes with no browser
+    # request, so a forgotten focus session doesn't block scheduled capture
+    # indefinitely. 0 = never time out.
+    timeout_minutes: int = 10
 
     @classmethod
     def from_capture(cls, cap: CaptureConfig, **overrides) -> "FocusConfig":
@@ -730,18 +735,29 @@ def run(
     server.focus_cfg = cfg  # type: ignore[attr-defined]
     server.procs = procs  # type: ignore[attr-defined]
     server.stream_lock = threading.Lock()  # type: ignore[attr-defined]
+    server.last_request = time.monotonic()  # type: ignore[attr-defined]
     server.daemon_threads = True
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
 
     print(f"\ncamrig focus — {cfg.camera} {cfg.width}x{cfg.height}@{cfg.framerate} q{cfg.quality}")
     print("Open in a browser on your tailnet, turn the lens ring to peak the score:")
     for url in _local_urls(cfg.port):
         print(f"  {url}")
-    print("Ctrl-C to stop.\n")
+    if cfg.timeout_minutes > 0:
+        print(f"Idle timeout: {cfg.timeout_minutes} min (releases the camera for scheduled "
+              "capture if left running). Ctrl-C to stop now.\n")
+    else:
+        print("Ctrl-C to stop.\n")
 
+    timeout_s = cfg.timeout_minutes * 60
     try:
-        server.serve_forever()
+        while cfg.timeout_minutes <= 0 or time.monotonic() - server.last_request < timeout_s:  # type: ignore[attr-defined]
+            time.sleep(_POLL_SECONDS)
     except KeyboardInterrupt:
         pass
+    else:
+        log.info("Idle timeout (%d min); stopping camrig focus", cfg.timeout_minutes)
     finally:
         server.shutdown()
         # Not the local procs/buffer: a completed recording swaps these on

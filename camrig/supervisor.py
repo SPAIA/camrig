@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -86,11 +87,40 @@ class Supervisor:
 
     # ----- capture primitives ------------------------------------------
 
+    async def _wait_for_camera(self, trigger: str) -> record.CaptureConfig | None:
+        """Resolve auto-lock, retrying while the camera is held by something
+        else (typically a manually-launched `camrig focus` session) instead
+        of giving up the slot immediately. Returns None if it's still busy
+        after camera_busy_max_wait_seconds.
+        """
+        deadline = time.monotonic() + self.cfg.capture.camera_busy_max_wait_seconds
+        warned = False
+        while True:
+            try:
+                # rpicam auto-lock needs a real (blocking) warm-up capture to
+                # probe converged exposure/gain; basler locks in-process and
+                # this call is a cheap no-op for it. Off the event loop either way.
+                return await asyncio.to_thread(record.resolve_auto_lock, self.cfg.capture)
+            except record.CameraBusyError:
+                if time.monotonic() >= deadline:
+                    log.warning(
+                        "Camera still busy after %ds; skipping %s capture",
+                        self.cfg.capture.camera_busy_max_wait_seconds, trigger,
+                    )
+                    return None
+                if not warned:
+                    log.info("Camera busy (camrig focus running?); waiting for it to free up")
+                    warned = True
+                await asyncio.sleep(self.cfg.capture.camera_busy_retry_seconds)
+
     async def _run_capture(
         self, *, trigger: str, session_id: str | None, duration_seconds: int | None
     ) -> None:
         """Hold the camera lock and run one capture to completion/stop."""
         async with self._camera_lock:
+            capture_cfg = await self._wait_for_camera(trigger)
+            if capture_cfg is None:
+                return
             if self.cfg.led.enabled:
                 await asyncio.to_thread(
                     led.flash,
@@ -103,10 +133,6 @@ class Supervisor:
             paths = record.clip_paths(day_dir, self.cfg.capture.profile, started_at)
             partial = paths.in_progress()
             duration = duration_seconds or self.cfg.capture.clip_seconds
-            # rpicam auto-lock needs a real (blocking) warm-up capture to
-            # probe converged exposure/gain; basler locks in-process and this
-            # call is a cheap no-op for it. Off the event loop either way.
-            capture_cfg = await asyncio.to_thread(record.resolve_auto_lock, self.cfg.capture)
             commands = record.build_commands(
                 capture_cfg, partial, int(duration * 1000), basler=self.cfg.basler
             )

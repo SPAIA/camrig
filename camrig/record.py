@@ -127,6 +127,11 @@ def _common_rpicam_args(cfg: CaptureConfig, pts_path: Path, duration_ms: int) ->
     return args
 
 
+class CameraBusyError(RuntimeError):
+    """rpicam-vid couldn't acquire the camera because another process (e.g. a
+    manually-launched ``camrig focus`` session) already holds it."""
+
+
 def _probe_rpicam_exposure(cfg: CaptureConfig) -> tuple[int, float]:
     """Run a short discarded auto-exposure capture and read back the
     converged shutter/gain.
@@ -151,7 +156,16 @@ def _probe_rpicam_exposure(cfg: CaptureConfig) -> tuple[int, float]:
             args += ["--shutter", str(cfg.shutter_us)]
         if cfg.gain > 0:
             args += ["--gain", str(cfg.gain)]
-        subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            subprocess.run(args, check=True, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE, text=True)
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr or ""
+            if "resource busy" in stderr or "failed to acquire camera" in stderr:
+                raise CameraBusyError(
+                    "camera already in use (camrig focus running?)"
+                ) from exc
+            raise
         frame = json.loads(meta_path.read_text(encoding="utf-8"))
     if isinstance(frame, list):
         frame = frame[-1]

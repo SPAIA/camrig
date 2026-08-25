@@ -43,6 +43,15 @@ class CaptureConfig:
     denoise: str = "cdn_off"
     clip_seconds: int = 300
     max_session_seconds: int = 600
+    # If the camera is already held by something else (typically a
+    # manually-launched `camrig focus` session) when a scheduled/startup
+    # capture is due, retry at this interval instead of giving up the slot.
+    camera_busy_retry_seconds: int = 10
+    # Give up and skip the slot if the camera is still busy after this long
+    # -- a bit past `camrig focus`'s own idle-timeout, so a forgotten focus
+    # session still gets reclaimed automatically rather than blocking capture
+    # indefinitely.
+    camera_busy_max_wait_seconds: int = 660
 
 
 @dataclass

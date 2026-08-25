@@ -132,6 +132,7 @@ def _cmd_focus(args, cfg) -> int:
         shutter_us=args.shutter,
         gain=args.gain,
         camera=args.camera,
+        timeout_minutes=args.timeout_minutes,
     )
     config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
     return run(
@@ -235,6 +236,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--shutter", type=int, dest="shutter",
                    help="manual shutter (us); default auto-expose")
     p.add_argument("--gain", type=float, help="analogue gain; default auto")
+    p.add_argument("--timeout-minutes", type=int, dest="timeout_minutes",
+                   help="stop (and release the camera) after this many idle minutes, "
+                        "0 = never (default 10)")
     p.add_argument("--dry-run", action="store_true", help="print the command, do not run")
     p.set_defaults(func=_cmd_focus)
 
