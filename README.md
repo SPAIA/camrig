@@ -141,9 +141,12 @@ supply headroom, thermals, or a specific driver, not as "solved."
 
 ## Storage
 
-Prefers an NVMe mountpoint (`storage.nvme_mount`, default `/mnt/nvme`) for sustained
-write bandwidth; **falls back to the SD card** (`storage.sd_fallback_dir`) if the
-NVMe mount is absent or not writable. Layout:
+Prefers a dedicated NVMe mountpoint (`storage.nvme_mount`, default `/mnt/nvme`) for
+sustained write bandwidth, on rigs that have one. Most rigs don't — they run
+entirely off a single boot NVMe (the SD card is only used to image it, then
+removed), so `storage.nvme_mount` is never present and every clip lands under
+`storage.sd_fallback_dir` instead. Despite the name that's not necessarily an SD
+card — it's just wherever local recordings live on that rig. Layout:
 
 ```
 <base>/recordings/2026-06-30/clip_20260630_101502.mkv
@@ -197,6 +200,27 @@ changing it, rebuild sidecars with `camrig postprocess --force`. The preview is
 for humans only — analysis always reads the original intra-only clip, so H.264
 artefacts in the preview don't matter.
 
+### Running postprocess/debug-motion against clips already in R2
+
+A clip uploaded before postprocess ran, or uploaded with `full_res = false`
+(so the full-res video never touched local disk), has no local copy for these
+tools to work on. `camrig bucket-postprocess` and `camrig bucket-debug-motion`
+fetch a clip's family down from the bucket with `rclone` into a scratch
+directory, run the normal local pipeline against that copy, and — for
+postprocess — push the generated sidecars back up. Run these from your own
+machine (wherever `rclone` is configured with the same `r2` remote as the Pi):
+
+```bash
+camrig bucket-postprocess 2026-09-01 clip_20260901_060000.mkv
+camrig bucket-debug-motion 2026-09-01 clip_20260901_060000.mkv --trail-seconds 5
+```
+
+The rig's hostname (the bucket's `<bucket>/<host>/<day>/...` layout) is
+auto-detected if the bucket only holds one rig; otherwise pass `--host`. Use
+`--dest` to pick where the clip lands locally (default: a temp dir) — useful
+if you want to keep the fetched files around, e.g. for `debug-motion`'s
+rendered `.motion_debug.mp4`, which is left there rather than uploaded.
+
 ## Remote trigger (Cloudflare)
 
 The Pi runs an outbound WebSocket client to your Worker. You implement the Worker +
@@ -215,6 +239,8 @@ Admin/SSH access to the Pi itself is via **Tailscale** (unchanged); only the pub
 /opt/camrig/venv/bin/camrig record --seconds 10    # capture a 10s test clip
 /opt/camrig/venv/bin/camrig postprocess            # preview+motion for pending clips
 /opt/camrig/venv/bin/camrig postprocess --force    # regenerate (e.g. new motion code)
+camrig bucket-postprocess DAY CLIP                 # postprocess a clip that only lives in R2 (run off-Pi)
+camrig bucket-debug-motion DAY CLIP                # debug-motion on a clip that only lives in R2 (run off-Pi)
 /opt/camrig/venv/bin/camrig upload                 # flush pending clips to R2 + prune
 /opt/camrig/venv/bin/camrig focus                  # live focus-assist page (see below)
 /opt/camrig/venv/bin/camrig supervise --no-cloud   # run scheduler without Cloudflare

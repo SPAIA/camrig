@@ -5,6 +5,8 @@ Subcommands:
   record      Record a single clip now (testing / manual; supports --dry-run).
   postprocess Generate preview + motion sidecars (one clip, or all pending).
   debug-motion Render motion tracks/blobs onto a clip for visual QA (on-demand).
+  bucket-postprocess   Postprocess a clip that lives only in the R2 bucket.
+  bucket-debug-motion  Render a debug preview for a clip that lives only in the R2 bucket.
   motion-view Serve an interactive motion-track viewer for a clip (reach it over Tailscale).
   upload      Flush pending clips to R2 now and prune (manual catch-up).
   focus       Serve a live focus-assist page (manual lens; reach it over Tailscale).
@@ -91,6 +93,44 @@ def _cmd_debug_motion(args, cfg) -> int:
     output = Path(args.output) if args.output else None
     ok = motion_debug.run(
         cfg, Path(args.clip), output=output, fps=args.fps,
+        trail_seconds=args.trail_seconds, dry_run=args.dry_run,
+    )
+    return 0 if ok else 1
+
+
+def _cmd_bucket_postprocess(args, cfg) -> int:
+    import tempfile
+    from pathlib import Path
+    from . import bucket
+
+    try:
+        host = bucket.resolve_host(cfg, args.host)
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+    dest = Path(args.dest) if args.dest else Path(tempfile.mkdtemp(prefix="camrig-bucket-"))
+    ok = bucket.postprocess_clip(
+        cfg, host, args.day, args.clip, dest, force=args.force, dry_run=args.dry_run,
+    )
+    return 0 if ok else 1
+
+
+def _cmd_bucket_debug_motion(args, cfg) -> int:
+    import tempfile
+    from pathlib import Path
+    from . import bucket
+
+    try:
+        host = bucket.resolve_host(cfg, args.host)
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+    dest = Path(args.dest) if args.dest else Path(tempfile.mkdtemp(prefix="camrig-bucket-"))
+    output = Path(args.output) if args.output else None
+    ok = bucket.debug_motion_clip(
+        cfg, host, args.day, args.clip, dest, output=output, fps=args.fps,
         trail_seconds=args.trail_seconds, dry_run=args.dry_run,
     )
     return 0 if ok else 1
@@ -213,6 +253,30 @@ def main(argv: list[str] | None = None) -> int:
                    help="how long a track's trail stays visible before fading (default 3.0)")
     p.add_argument("--dry-run", action="store_true", help="print the ffmpeg commands, do not run")
     p.set_defaults(func=_cmd_debug_motion)
+
+    p = sub.add_parser("bucket-postprocess",
+                       help="postprocess a clip that lives only in the R2 bucket")
+    p.add_argument("day", help="clip's day directory, e.g. 2026-09-01")
+    p.add_argument("clip", help="clip filename within that day, e.g. clip_20260901_060000.mkv")
+    p.add_argument("--host", help="rig hostname in the bucket (default: auto-detect if only one)")
+    p.add_argument("--dest", help="local scratch dir to fetch into (default: a temp dir)")
+    p.add_argument("--force", action="store_true",
+                   help="regenerate even if sidecars already exist in the bucket")
+    p.add_argument("--dry-run", action="store_true", help="print the commands, do not run")
+    p.set_defaults(func=_cmd_bucket_postprocess)
+
+    p = sub.add_parser("bucket-debug-motion",
+                       help="render a debug preview for a clip that lives only in the R2 bucket")
+    p.add_argument("day", help="clip's day directory, e.g. 2026-09-01")
+    p.add_argument("clip", help="clip filename within that day, e.g. clip_20260901_060000.mkv")
+    p.add_argument("--host", help="rig hostname in the bucket (default: auto-detect if only one)")
+    p.add_argument("--dest", help="local scratch dir to fetch into (default: a temp dir)")
+    p.add_argument("-o", "--output", help="output path (default: <dest>/<clip>.motion_debug.mp4)")
+    p.add_argument("--fps", type=float, help="output frame rate (default: capture.framerate)")
+    p.add_argument("--trail-seconds", type=float, default=3.0,
+                   help="how long a track's trail stays visible before fading (default 3.0)")
+    p.add_argument("--dry-run", action="store_true", help="print the commands, do not run")
+    p.set_defaults(func=_cmd_bucket_debug_motion)
 
     p = sub.add_parser("motion-view",
                        help="serve an interactive motion-track viewer for a clip")

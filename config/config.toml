@@ -108,9 +108,13 @@ stop_hour = 22
 interval_min = 10
 
 [storage]
-# Preferred fast storage. Used if this path is a mountpoint and writable.
+# Preferred fast storage on rigs with a *dedicated* NVMe (PCIe HAT). Used if
+# this path is a mountpoint and writable; leave unconfigured/absent on
+# single-NVMe rigs (boot NVMe only, SD card removed after imaging).
 nvme_mount = "/mnt/nvme"
-# Fallback when the NVMe mount is absent/not writable.
+# Used whenever nvme_mount above isn't present/writable -- i.e. on every
+# single-NVMe rig. Despite the name this is not necessarily an SD card: it's
+# just wherever local recordings live (typically the boot NVMe's root fs).
 sd_fallback_dir = "/home/spaia/recordings"
 # Keep uploaded clips locally for this many days before they may be pruned.
 keep_days = 2

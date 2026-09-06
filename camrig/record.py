@@ -150,6 +150,9 @@ def _probe_rpicam_exposure(cfg: CaptureConfig) -> tuple[int, float]:
             "--framerate", str(cfg.framerate),
             "--nopreview", "--timeout", str(cfg.auto_lock_warmup_ms),
             "--metadata", str(meta_path), "--metadata-format", "json",
+            # Explicit codec: newer rpicam-apps can't infer a container from
+            # the extension-less /dev/null path and fails to start at all.
+            "--codec", "yuv420",
             "-o", "/dev/null",
         ]
         if cfg.shutter_us > 0:

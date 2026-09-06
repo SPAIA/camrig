@@ -1,8 +1,12 @@
 """Recording storage: pick the fastest writable base, and prune by retention.
 
-Prefers an NVMe mountpoint (PCIe HAT) for the sustained write bandwidth that
-high-fidelity capture needs; falls back to an SD-card directory when the NVMe
-mount is absent or not writable.
+Prefers a dedicated NVMe mountpoint (PCIe HAT) for the sustained write
+bandwidth that high-fidelity capture needs, on rigs that have one. Most rigs
+don't: they run entirely off a single boot NVMe (SD card removed once the OS
+is written to it), so ``storage.nvme_mount`` is never configured/present and
+every clip lands under ``storage.sd_fallback_dir`` instead — which, despite
+the name, is just wherever local recordings live on that rig (root
+filesystem, SD card, or otherwise), not necessarily an SD card.
 """
 
 from __future__ import annotations
@@ -49,14 +53,21 @@ def select_base_dir(cfg: Config) -> Path:
     nvme = Path(cfg.storage.nvme_mount)
     if _is_writable_mount(nvme):
         base = nvme / "recordings"
-        log.info("Using NVMe storage at %s", base)
+        log.info("Using dedicated NVMe storage at %s", base)
     else:
         base = Path(cfg.storage.sd_fallback_dir)
-        log.warning(
-            "NVMe mount %s unavailable; falling back to SD storage at %s",
-            nvme,
-            base,
-        )
+        if nvme.exists():
+            # The mountpoint exists but isn't mounted/writable: a dedicated
+            # NVMe was expected on this rig and isn't working.
+            log.warning(
+                "NVMe mount %s present but not writable; falling back to local storage at %s",
+                nvme,
+                base,
+            )
+        else:
+            # No dedicated NVMe configured for this rig at all — the normal,
+            # permanent state for single-NVMe rigs. Not a degraded condition.
+            log.info("No dedicated NVMe mount for this rig; using local storage at %s", base)
     base.mkdir(parents=True, exist_ok=True)
     return base
 

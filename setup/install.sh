@@ -124,6 +124,9 @@ echo "==> Setting EEPROM POWER_OFF_ON_HALT for RTC wake"
 echo "==> Enabling hardware watchdog + persistent journal (crash/freeze recovery)"
 "$REPO_DIR/setup/set_watchdog.sh" || echo "    (watchdog step skipped/failed — run setup/set_watchdog.sh manually)"
 
+echo "==> Granting $CAM_USER write access to the activity LED (capture flash cue)"
+"$REPO_DIR/setup/set_led_perms.sh" "$CAM_USER" || echo "    (LED perms step skipped/failed — run setup/set_led_perms.sh manually)"
+
 cat <<EOF
 
 Done. Next steps:
