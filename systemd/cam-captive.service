@@ -1,6 +1,12 @@
 [Unit]
 Description=camrig captive-portal AP fallback (focus page, no-internet-after-boot)
-After=cam-boot.service
+# Deliberately no After=cam-boot.service: cam-boot.service (a oneshot) only
+# reaches "active" once its whole ExecStart -- including the postprocess/
+# upload catch-up -- exits, and it is itself the thing that issues
+# `systemctl start cam-captive.service`. An After= ordering here would make
+# systemd queue that start job as "waiting" until cam-boot.service finishes,
+# defeating the fallback exactly when it's needed most (a rig with a
+# postprocess/upload backlog and no network).
 
 [Service]
 Type=simple
