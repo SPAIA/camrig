@@ -51,7 +51,7 @@ auto_lock_warmup_ms = 1000
 denoise = "cdn_off"
 
 # Scheduled clip length in seconds (5 minutes).
-clip_seconds = 180
+clip_seconds = 300
 
 # Safety ceiling for human-triggered sessions; the supervisor force-stops after this.
 max_session_seconds = 600
@@ -104,8 +104,9 @@ nice = 10
 # Active recording window (local time). Outside it the Pi shuts down.
 start_hour = 6
 stop_hour = 22
-# Scheduled clip cadence in minutes (on the clock, e.g. :00/:10/:20/... for 10).
-interval_min = 10
+# Scheduled clip cadence in minutes (on the clock, e.g. :00/:06/:12/... for 6).
+# 5-minute clip + 1-minute gap between recordings.
+interval_min = 6
 
 [storage]
 # Preferred fast storage on rigs with a *dedicated* NVMe (PCIe HAT). Used if
