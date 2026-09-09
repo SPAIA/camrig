@@ -174,8 +174,12 @@ delay_seconds = 300
 # Fallback Wi-Fi AP + captive-portal focus page, started by cam-boot.service
 # only when there's no internet after boot (fresh deployment, wrong Wi-Fi
 # creds, out of range) -- see "Focusing the lens" in README.md. No-op (never
-# touches the network) if the rig is actually online.
-enabled = true
+# touches the network) if the rig is actually online. Off by default: the AP
+# + live camera stream it holds up is real power draw on a boot that's
+# already struggling (see the 2026-09-07 field incident), and most rigs are
+# reachable over Tailscale anyway -- opt in per-rig for fresh deployments
+# where there's no other way to reach the focus page.
+enabled = false
 # SSID a phone/laptop joins to reach the fallback focus page.
 ssid = "camrig-setup"
 # Empty = open network. Set a passphrase (8-63 chars) for WPA2-PSK.

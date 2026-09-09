@@ -301,9 +301,15 @@ service yourself.
 
 ### No-internet fallback: captive-portal AP
 
-If `cam-boot.service` finds no internet at boot (fresh deployment, wrong Wi-Fi
-credentials, out of Tailscale's reach), it starts `cam-captive.service`, which
-stands wlan0 up as its own open AP — SSID **`camrig-setup`** by default — and
+**Off by default** (`[captive] enabled = false`) — the AP + live camera stream
+it holds up is real power draw on a boot that's already struggling, and most
+rigs are reachable over Tailscale anyway. Opt in per-rig (`enabled = true`)
+for a fresh deployment where there's no other way to reach the focus page.
+
+When enabled and `cam-boot.service` finds no internet at boot (fresh
+deployment, wrong Wi-Fi credentials, out of Tailscale's reach), it starts
+`cam-captive.service`, which stands wlan0 up as its own open AP — SSID
+**`camrig-setup`** by default — and
 serves the same focus page above to whatever joins it: DNS on the AP is
 wildcarded to the Pi, so most phones/laptops auto-pop a "Sign in to Wi-Fi
 network" prompt straight onto it. Useful for diagnosing/focusing a rig with
@@ -321,9 +327,9 @@ before touching the network), and tears itself down after `captive.timeout_minut
 run unattended. Same camera-exclusivity caveat as `camrig focus` above: it
 needs the camera free, so it may not grab a live view if `cam-supervisor` is
 mid-clip when it starts (it fires early in boot, typically before that).
-Configure SSID/passphrase/timeout in `[captive]` in `config.toml`, or
-`enabled = false` to disable it entirely; run it manually with
-`camrig captive-portal --dry-run` to preview the AP/dnsmasq/stream plan.
+Configure SSID/passphrase/timeout/`enabled` in `[captive]` in `config.toml`;
+run it manually with `camrig captive-portal --dry-run` to preview the
+AP/dnsmasq/stream plan (works regardless of `enabled`).
 
 ## Verify on the Pi
 
@@ -350,6 +356,29 @@ Configure SSID/passphrase/timeout in `[captive]` in `config.toml`, or
 - **Battery deployment:** add an **ESP32 wake-on-GPIO** companion (Pi 5
   `WAKE_ON_GPIO=1`) so the Pi can sleep between sessions and wake on demand. Today's
   web trigger assumes the Pi is already on during the daytime window.
+- **Field power supply (learned the hard way, 2026-09-07):** a Pi 5 pulling
+  camera + GigE Basler + NVMe + Wi-Fi concurrently can spike past what a
+  budget DC-DC converter or a loose connection can sustain — the symptom is
+  `hwmon: Undervoltage detected!` in `journalctl -k`, then a hardware-watchdog
+  reboot loop (see [Crash resilience](#crash-resilience)), and eventually a
+  brownout the watchdog can't even recover from. Two rules for a battery rig:
+  - **Feed power in via USB-C, not Dupont wires onto the GPIO header.**
+    Dupont/jumper connections are signal-rated, not power-rated, and get
+    worse with vibration — carrying the rig around is enough to turn a
+    marginal connection into a dead one.
+    Get a converter with USB-C output rated for a genuine continuous 5V/5A
+    with overload/low-voltage protection (so it fails clean instead of
+    silently sagging) and sized for the battery's actual voltage range.
+    If the converter doesn't speak USB-PD, `config.txt` needs
+    `max_usb_current=1` (already set on `spaia-vision-1`) to let the Pi draw
+    full current — pair that override with a supply that can actually back
+    it up, since it removes the Pi's own conservative default ceiling.
+  - **Load-test before trusting a rig to a field day.** An inline USB-C
+    power/current meter between the converter and the Pi (e.g. a
+    KWS-2303C-style tester) will show real sag under load, unlike a battery's
+    charge-percentage LED, which reflects resting voltage, not
+    voltage-under-load. Trigger a real capture and a Wi-Fi association at the
+    same time while watching it — that combination is what took the rig down.
 - ~~**Basler (second backend)**~~ — done: the ace 2 GigE backend lives in
   [`camrig/basler.py`](camrig/basler.py) behind the same profile/metadata
   interface. A USB3 dart would reuse the same module (pypylon is

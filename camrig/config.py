@@ -161,7 +161,7 @@ class CaptiveConfig:
     # when there's no internet after boot (fresh deployment, wrong Wi-Fi creds,
     # out of range) so a phone can join and reach the focus page directly —
     # see "Focusing the lens" in README.md.
-    enabled: bool = True
+    enabled: bool = False
     ssid: str = "camrig-setup"
     # Empty = open network. Set a passphrase (8-63 chars) for WPA2-PSK.
     psk: str = ""
