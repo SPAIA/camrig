@@ -1,11 +1,15 @@
 """Shutdown orchestration (cam-shutdown.service at 22:00, runs as root).
 
-Upload today's clips while there is still network, prune storage, then program
-the RTC wake alarm for the next morning and power the board off. With
-POWER_OFF_ON_HALT=1 in the EEPROM, the RTC re-powers the Pi at the wake time.
+Finish pending postprocess and prune storage, then program the RTC wake alarm
+for the next morning and power the board off. With POWER_OFF_ON_HALT=1 in the
+EEPROM, the RTC re-powers the Pi at the wake time.
 
-If the upload fails (e.g. offline), files remain on disk and the next boot's
-catch-up upload flushes them — so we still proceed to sleep.
+Deliberately does not upload here: with `upload.immediate` (the default) each
+clip already ships right after its own postprocess, so there's normally
+nothing left pending by shutdown anyway -- and blocking a field shutdown on a
+bulk upload of whatever *is* still pending (often large full-res clips, often
+over a slow or absent connection) is worse than just leaving it for the next
+boot's catch-up upload or a manual `camrig upload`.
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ from __future__ import annotations
 import logging
 
 from .config import Config
-from . import postprocess, power, storage, upload
+from . import postprocess, power, storage
 
 log = logging.getLogger("camrig.shutdown")
 
@@ -28,12 +32,10 @@ def run(cfg: Config, *, skip_poweroff: bool = False, dry_run: bool = False) -> i
     if cfg.postprocess.enabled:
         postprocess.process_pending(cfg, base, dry_run=dry_run)
 
-    if cfg.upload.enabled:
-        if upload.remote_reachable(cfg):
-            upload.upload_today(cfg, base, dry_run=dry_run)
-            storage.prune(cfg, base)
-        else:
-            log.warning("R2 not reachable; leaving today's clips for boot catch-up")
+    # Prune only, no upload -- see module docstring. Cheap/local: only touches
+    # clips already marked uploaded (by the immediate per-clip path or a prior
+    # catch-up), so it doesn't need network reachability.
+    storage.prune(cfg, base)
 
     if skip_poweroff:
         log.info("skip_poweroff set; not sleeping")

@@ -2,16 +2,23 @@
 
 Order: request cam-captive.service (the AP/captive-portal focus fallback,
 camrig.captive) first thing -- a no-op if there's actually internet, since
-that service re-checks reachability itself before touching the network. This
-has to come before any of the catch-up work below: a rig with a sizeable
-postprocess/upload backlog could otherwise leave someone standing at a
-deployment site with no wifi for many minutes before the fallback AP
-appears. Then sync the clock via NTP (if online), sweep *.part staging files
-a crash or power-off left behind (salvaging complete captures), finish any
-postprocess a crash or power-off interrupted (so previews/motion sidecars
-exist before upload), then flush any clips a failed or offline nightly
-upload left behind, then prune storage. The supervisor service starts
-independently and begins recording regardless of network state.
+that service re-checks reachability itself before touching the network. Then
+sync the clock via NTP (if online), sweep *.part staging files a crash or
+power-off left behind (salvaging complete captures), finish any postprocess a
+crash or power-off interrupted (so previews/motion sidecars exist), then
+prune storage. The supervisor service starts independently and begins
+recording regardless of network state.
+
+Deliberately does not upload here: a boot-time bulk upload competes for
+bandwidth/CPU with recording, focus, and the captive portal right when a rig
+is freshly powered up in the field -- often on a slow or flaky mobile
+connection, which is exactly when that contention hurts most. With
+`upload.immediate` (the default) each clip ships right after its own
+postprocess anyway, so there's normally nothing built up to catch up on. The
+trade-off: a clip that *did* miss immediate upload (R2 unreachable at the
+time) no longer retries automatically on its own -- run `camrig upload`
+manually next time there's a decent connection. Nothing is lost either way:
+an unuploaded clip is never pruned (see storage.prune), it just waits on disk.
 """
 
 from __future__ import annotations
@@ -20,7 +27,7 @@ import logging
 import subprocess
 
 from .config import Config
-from . import postprocess, storage, timesync, upload
+from . import postprocess, storage, timesync
 
 log = logging.getLogger("camrig.boot")
 
@@ -42,11 +49,6 @@ def run(cfg: Config, *, dry_run: bool = False) -> int:
     if cfg.postprocess.enabled:
         postprocess.process_pending(cfg, base, dry_run=dry_run)
 
-    if cfg.upload.enabled:
-        if upload.remote_reachable(cfg):
-            upload.upload_pending(cfg, base, dry_run=dry_run)
-            storage.prune(cfg, base)
-        else:
-            log.warning("R2 not reachable; deferring catch-up upload")
+    storage.prune(cfg, base)
 
     return 0

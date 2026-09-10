@@ -16,8 +16,12 @@ What it does:
   low-res **H.264 preview** for scrubbing plus a **per-frame motion-metrics
   sidecar** (placeholder analysis, the seed of the motion-trail tracker).
 - **Uploads each clip to Cloudflare R2 as soon as its sidecars are ready** (via
-  rclone), so device space is reclaimed early; nightly + boot catch-up uploads
-  cover anything recorded while offline.
+  rclone), so device space is reclaimed early. Neither boot nor shutdown does
+  a bulk catch-up upload (both would compete for bandwidth/CPU with
+  recording, focus, and each other right when a rig is freshly powered up in
+  the field) -- a clip that misses immediate upload just waits on disk until
+  a manual `camrig upload`; see
+  [Post-capture processing](#post-capture-processing-preview--motion).
 
 ## Why these choices (tracking fidelity)
 
@@ -180,9 +184,16 @@ incomplete ones deleted.
 
 As soon as a clip's sidecars exist it is **uploaded to R2 immediately** and
 marked, making it prune-eligible right away (retention still honours
-`keep_days`/`min_free_gb`) instead of holding the day on disk until the nightly
-upload. If the upload or postprocess fails, the clip simply stays unmarked and
-the boot/shutdown catch-up ships it — including any sidecars that arrived late.
+`keep_days`/`min_free_gb`). If the upload or postprocess fails, the clip
+simply stays unmarked — never pruned — and waits on disk until you run
+`camrig upload`. Neither `cam-boot.service` nor `cam-shutdown.service` does a
+bulk catch-up upload of its own: with immediate upload on, there's normally
+nothing left pending anyway, and a bulk upload of whatever full-res clips
+*are* still pending (often large, often over a weak field connection) would
+just compete for bandwidth/CPU with recording, focus, and the captive portal
+right when a rig is freshly powered up -- exactly when that contention hurts
+most. Postprocess and the `.part`-staging crash recovery below are still
+swept at both boot and shutdown; only the upload sweep was dropped.
 
 Two `[upload]` switches control this behaviour:
 
@@ -244,8 +255,8 @@ camrig bucket-debug-motion DAY CLIP                # debug-motion on a clip that
 /opt/camrig/venv/bin/camrig upload                 # flush pending clips to R2 + prune
 /opt/camrig/venv/bin/camrig focus                  # live focus-assist page (see below)
 /opt/camrig/venv/bin/camrig supervise --no-cloud   # run scheduler without Cloudflare
-/opt/camrig/venv/bin/camrig boot                   # NTP sync + catch-up upload
-/opt/camrig/venv/bin/camrig shutdown --skip-poweroff   # upload+arm wake, but stay up
+/opt/camrig/venv/bin/camrig boot                   # NTP sync + crash/postprocess catch-up
+/opt/camrig/venv/bin/camrig shutdown --skip-poweroff   # postprocess/prune+arm wake, but stay up
 ```
 
 ## Focusing the lens (headless, over Tailscale)
@@ -343,7 +354,7 @@ AP/dnsmasq/stream plan (works regardless of `enabled`).
 4. **Wake test:** `sudo bash -c 'echo 0 > /sys/class/rtc/rtc0/wakealarm; echo +120 >
    /sys/class/rtc/rtc0/wakealarm'; sudo systemctl poweroff` — board should wake in
    ~2 min (requires `POWER_OFF_ON_HALT=1`; check `rpi-eeprom-config`).
-5. `camrig boot` with a small clip present → objects appear in R2.
+5. `camrig upload` with a small clip present → objects appear in R2.
 6. `systemctl status cam-supervisor`; `systemctl list-timers cam-shutdown.timer`;
    watch `journalctl -u cam-supervisor -f` across a 30-minute boundary.
 

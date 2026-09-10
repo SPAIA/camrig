@@ -1,5 +1,5 @@
 [Unit]
-Description=camrig nightly shutdown (final R2 upload + RTC wake alarm + power off)
+Description=camrig nightly shutdown (postprocess/prune + RTC wake alarm + power off)
 # Don't begin sleeping while a capture is still wrapping up.
 After=network-online.target
 Wants=network-online.target

@@ -1,5 +1,5 @@
 [Unit]
-Description=camrig boot tasks (NTP sync + catch-up upload to R2)
+Description=camrig boot tasks (NTP sync + crash/postprocess catch-up + prune)
 After=network-online.target
 Wants=network-online.target
 
