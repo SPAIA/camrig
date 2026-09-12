@@ -138,5 +138,79 @@ class AutoLockTests(unittest.TestCase):
         self.assertEqual(resolved.gain, 6.0)  # probed, was auto
 
 
+class RpicamAfTests(unittest.TestCase):
+    def test_build_commands_uses_camera_index_1(self) -> None:
+        cfg = CaptureConfig(camera="rpicam-af", profile="mjpeg", lens_position=5.0)
+        paths = _family(Path("/tmp"))
+        [rpicam, _ffmpeg] = build_commands(cfg, paths, 1000)
+        i = rpicam.index("--camera")
+        self.assertEqual(rpicam[i + 1], "1")
+
+    def test_build_commands_pins_resolved_lens_position(self) -> None:
+        cfg = CaptureConfig(camera="rpicam-af", profile="raw", lens_position=7.5)
+        paths = _family(Path("/tmp"))
+        [rpicam] = build_commands(cfg, paths, 1000)
+        self.assertIn("--autofocus-mode", rpicam)
+        i = rpicam.index("--lens-position")
+        self.assertEqual(rpicam[i + 1], "7.5")
+
+    def test_build_commands_omits_af_flags_when_unresolved(self) -> None:
+        cfg = CaptureConfig(camera="rpicam-af", profile="mjpeg", lens_position=0.0)
+        paths = _family(Path("/tmp"))
+        [rpicam, _ffmpeg] = build_commands(cfg, paths, 1000)
+        self.assertNotIn("--autofocus-mode", rpicam)
+        self.assertNotIn("--lens-position", rpicam)
+
+    def test_resolve_auto_lock_always_focuses_rpicam_af(self) -> None:
+        """Autofocus runs before every clip regardless of auto_lock."""
+        cfg = CaptureConfig(camera="rpicam-af", auto_lock=False,
+                             shutter_us=2000, gain=4.0, lens_position=0.0)
+
+        def fake_run(args, **kwargs):
+            self.assertIn("--autofocus-mode", args)
+            meta_path = Path(args[args.index("--metadata") + 1])
+            meta_path.write_text(json.dumps({"LensPosition": 3.25}), encoding="utf-8")
+            return Mock(returncode=0)
+
+        with patch("camrig.record.subprocess.run", side_effect=fake_run) as run:
+            resolved = resolve_auto_lock(cfg)
+
+        run.assert_called_once()
+        self.assertEqual(resolved.lens_position, 3.25)
+        # Manual exposure untouched: auto_lock was off.
+        self.assertEqual(resolved.shutter_us, 2000)
+        self.assertEqual(resolved.gain, 4.0)
+
+    def test_resolve_auto_lock_is_noop_when_lens_position_manual(self) -> None:
+        cfg = CaptureConfig(camera="rpicam-af", lens_position=2.0)
+        self.assertIs(resolve_auto_lock(cfg), cfg)
+
+    def test_resolve_auto_lock_combines_exposure_and_focus_probe(self) -> None:
+        """One warm-up capture resolves both when auto_lock and AF both apply."""
+        cfg = CaptureConfig(camera="rpicam-af", auto_lock=True, shutter_us=0, gain=0.0,
+                             lens_position=0.0, auto_lock_warmup_ms=1000,
+                             autofocus_warmup_ms=2500)
+
+        def fake_run(args, **kwargs):
+            self.assertIn("--autofocus-mode", args)
+            i = args.index("--timeout")
+            self.assertEqual(args[i + 1], "2500")  # max(1000, 2500)
+            meta_path = Path(args[args.index("--metadata") + 1])
+            meta_path.write_text(
+                json.dumps({"ExposureTime": 5000.0, "AnalogueGain": 2.0,
+                            "LensPosition": 1.5}),
+                encoding="utf-8",
+            )
+            return Mock(returncode=0)
+
+        with patch("camrig.record.subprocess.run", side_effect=fake_run) as run:
+            resolved = resolve_auto_lock(cfg)
+
+        run.assert_called_once()
+        self.assertEqual(resolved.shutter_us, 5000)
+        self.assertEqual(resolved.gain, 2.0)
+        self.assertEqual(resolved.lens_position, 1.5)
+
+
 if __name__ == "__main__":
     unittest.main()

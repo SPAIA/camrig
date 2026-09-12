@@ -20,8 +20,10 @@ DEFAULT_CONFIG_PATH = Path(os.environ.get("CAMRIG_CONFIG", "/etc/camrig/config.t
 
 @dataclass
 class CaptureConfig:
-    # Camera backend: "rpicam" (Pi Global Shutter IMX296) or "basler"
-    # (Basler ace 2 mono over GigE; transport settings live in [basler]).
+    # Camera backend: "rpicam" (Pi Global Shutter IMX296), "rpicam-af" (Pi
+    # Camera Module 3, autofocus, on CAM1 -- see lens_position/
+    # autofocus_warmup_ms below) or "basler" (Basler ace 2 mono over GigE;
+    # transport settings live in [basler]).
     camera: str = "rpicam"
     profile: str = "mjpeg"
     width: int = 1456
@@ -40,6 +42,14 @@ class CaptureConfig:
     # polls ExposureAuto/GainAuto for this long, rpicam runs a discarded
     # warm-up capture of this length.
     auto_lock_warmup_ms: int = 1000
+    # rpicam-af only: lens position in dioptres (1/metres) pinned for every
+    # clip. 0 = autofocus once before each clip (a discarded warm-up capture,
+    # same mechanism as auto_lock above) and hold the converged position for
+    # the rest of it. Set manually to skip that warm-up once you know a good
+    # value (read it back from a clip's .json after an autofocus run).
+    lens_position: float = 0.0
+    # Max time (ms) to let autofocus converge during that warm-up capture.
+    autofocus_warmup_ms: int = 2000
     denoise: str = "cdn_off"
     clip_seconds: int = 300
     max_session_seconds: int = 600

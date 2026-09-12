@@ -74,6 +74,26 @@ and bandwidth limits (GigE caps Mono8 at ~115 MB/s ≈ width×height×fps) are i
 [`docs/basler-gige.md`](docs/basler-gige.md).** The Pi's internet then moves to
 Wi-Fi — eth0 becomes the dedicated camera link.
 
+## Third camera: Pi Camera Module 3 (autofocus, comparison rig)
+
+Set `capture.camera = "rpicam-af"` (or per-run `camrig record --camera
+rpicam-af`) to capture from a **Camera Module 3** (autofocus, colour IMX708)
+wired into **CAM1** alongside the Global Shutter on CAM0, so you can switch
+between them without re-plugging anything. It shares the rpicam-vid/
+rpicam-raw pipeline with the Global Shutter backend — same profiles, sidecars,
+postprocess, and upload — and is distinguished by the `camera`/`sensor`
+fields in each clip's `.json` (`imx708`).
+
+Since this sensor has no manual focus ring, `camrig` autofocuses it before
+every clip instead of relying on `camrig focus` peaking: a short discarded
+warm-up capture runs `--autofocus-mode auto`, and the real clip then pins
+`--lens-position` to the converged value for the rest of the recording — the
+same "warm up, then hold" approach `auto_lock` uses for exposure (and it
+happens automatically, independent of `auto_lock`). Set `capture.lens_position`
+manually in config to skip that warm-up once you know a good value for your
+scene (read it back from a clip's `.json` after an autofocus run); tune
+`capture.autofocus_warmup_ms` if convergence needs more/less time.
+
 ## Install (on the Pi, Debian Trixie / Pi OS)
 
 ```bash
@@ -261,9 +281,11 @@ camrig bucket-debug-motion DAY CLIP                # debug-motion on a clip that
 
 ## Focusing the lens (headless, over Tailscale)
 
-The IMX296 uses a **manual-focus** C/CS-mount lens — you set focus by turning the
-lens ring. Since the Pi is headless and reached over Tailscale, `camrig focus`
-serves a browser page with a live view and a **sharpness score**:
+The IMX296 and the Basler ace 2 both use **manual-focus** C/CS-mount lenses —
+you set focus by turning the lens ring (the Camera Module 3 autofocuses
+itself before every clip instead; see above). Since the Pi is headless and
+reached over Tailscale, `camrig focus` serves a browser page with a live view
+and a **sharpness score**:
 
 ```bash
 /opt/camrig/venv/bin/camrig focus                  # full sensor, :8080, auto-exposure

@@ -228,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_supervise)
 
     p = sub.add_parser("record", help="record a single clip now")
-    p.add_argument("--camera", choices=["rpicam", "basler"],
+    p.add_argument("--camera", choices=["rpicam", "rpicam-af", "basler"],
                    help="camera backend (default: capture.camera in config)")
     p.add_argument("--profile", choices=["mjpeg", "ffv1", "raw"])
     p.add_argument("--seconds", type=int, help="override clip length")
@@ -289,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_upload)
 
     p = sub.add_parser("focus", help="serve a live focus-assist page")
-    p.add_argument("--camera", choices=["rpicam", "basler"],
+    p.add_argument("--camera", choices=["rpicam", "rpicam-af", "basler"],
                    help="camera backend (default: capture.camera in config)")
     p.add_argument("--port", type=int, default=8080, help="HTTP port (default 8080)")
     p.add_argument("--width", type=int, help="stream width (default: full sensor)")

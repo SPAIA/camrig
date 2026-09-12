@@ -2,10 +2,12 @@
 # All values shown are the built-in defaults (see camrig/config.py); override here.
 
 [capture]
-# Camera backend: "rpicam" (Pi Global Shutter, colour IMX296) or "basler"
-# (Basler ace 2 mono over GigE — transport settings in [basler] below, wiring
-# and network setup in docs/basler-gige.md). width/height/framerate/quality/
-# shutter_us/clip_seconds apply to both backends.
+# Camera backend: "rpicam" (Pi Global Shutter, colour IMX296, CAM0),
+# "rpicam-af" (Pi Camera Module 3, autofocus, colour IMX708, CAM1 — see
+# lens_position/autofocus_warmup_ms below), or "basler" (Basler ace 2 mono
+# over GigE — transport settings in [basler] below, wiring and network setup
+# in docs/basler-gige.md). width/height/framerate/quality/shutter_us/
+# clip_seconds apply to all backends.
 camera = "rpicam"
 
 # Capture profile: "mjpeg" (default daily pipeline, intra-only, clean frames),
@@ -45,7 +47,19 @@ auto_lock = false
 # length (added to each clip's wall time, on top of clip_seconds).
 auto_lock_warmup_ms = 1000
 
-# ISP denoise mode (rpicam only; the Basler mono path applies no denoise).
+# rpicam-af only: lens position in dioptres (1/metres) pinned for every clip.
+# 0 = autofocus once before each clip (a discarded warm-up capture, same
+# mechanism as auto_lock above) and hold the converged position for the rest
+# of it -- this runs automatically for rpicam-af regardless of auto_lock,
+# since there's no manual-lens fallback the way shutter/gain have. Set
+# manually to skip that warm-up once you know a good value (read it back
+# from a clip's .json after an autofocus run).
+lens_position = 0.0
+
+# Max time (ms) to let autofocus converge during that warm-up capture.
+autofocus_warmup_ms = 2000
+
+# ISP denoise mode (rpicam/rpicam-af only; the Basler mono path applies no denoise).
 # "cdn_off" disables temporal/3D denoise, which otherwise smears or erases
 # insect-sized moving targets. Other values: auto, cdn_fast, cdn_hq.
 denoise = "cdn_off"

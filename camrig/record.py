@@ -1,9 +1,12 @@
 """Build and run a single capture.
 
-Two camera backends behind one interface (``capture.camera``):
+Three camera backends behind one interface (``capture.camera``):
 
 * ``rpicam`` (default) — the Pi Global Shutter colour IMX296 via rpicam-vid /
-  rpicam-raw.
+  rpicam-raw, on CAM0.
+* ``rpicam-af``        — the Pi Camera Module 3 (autofocus, colour IMX708),
+  on CAM1. Same rpicam-vid/rpicam-raw binaries, ``--camera 1``, plus an
+  autofocus-then-lock warm-up before each clip -- see resolve_auto_lock().
 * ``basler``           — a Basler ace 2 mono over GigE via ``camrig.basler``
   (a producer subprocess with an rpicam-shaped interface; transport settings
   in the [basler] config section, wiring in docs/basler-gige.md).
@@ -107,10 +110,30 @@ def clip_paths(day_dir: Path, profile: str, started_at: datetime) -> ClipPaths:
     )
 
 
+def rpicam_camera_index(camera: str) -> str:
+    """The ``--camera`` index for an rpicam backend: CAM0 for the Global
+    Shutter, CAM1 for the Camera Module 3 (autofocus)."""
+    return "1" if camera == "rpicam-af" else "0"
+
+
+def _rpicam_af_args(cfg: CaptureConfig) -> list[str]:
+    """``--autofocus-mode``/``--lens-position`` args for the rpicam-af
+    backend, once resolve_auto_lock() has probed and pinned lens_position.
+
+    Empty for every other backend, and empty when lens_position is still 0
+    (unresolved) -- e.g. under --dry-run, which builds commands without
+    calling resolve_auto_lock() first; the real capture path always resolves
+    before build_commands() runs (see record_clip()).
+    """
+    if cfg.camera != "rpicam-af" or cfg.lens_position <= 0:
+        return []
+    return ["--autofocus-mode", "manual", "--lens-position", str(cfg.lens_position)]
+
+
 def _common_rpicam_args(cfg: CaptureConfig, pts_path: Path, duration_ms: int) -> list[str]:
     """rpicam arguments shared across rpicam-vid profiles."""
     args = [
-        "--camera", "0",
+        "--camera", rpicam_camera_index(cfg.camera),
         "--width", str(cfg.width),
         "--height", str(cfg.height),
         "--framerate", str(cfg.framerate),
@@ -124,6 +147,7 @@ def _common_rpicam_args(cfg: CaptureConfig, pts_path: Path, duration_ms: int) ->
         args += ["--shutter", str(cfg.shutter_us)]
     if cfg.gain > 0:
         args += ["--gain", str(cfg.gain)]
+    args += _rpicam_af_args(cfg)
     return args
 
 
@@ -132,23 +156,25 @@ class CameraBusyError(RuntimeError):
     manually-launched ``camrig focus`` session) already holds it."""
 
 
-def _probe_rpicam_exposure(cfg: CaptureConfig) -> tuple[int, float]:
-    """Run a short discarded auto-exposure capture and read back the
-    converged shutter/gain.
+def _probe_rpicam_warmup(
+    cfg: CaptureConfig, warmup_ms: int, probe_focus: bool
+) -> tuple[int, float, float]:
+    """Run a short discarded warm-up capture and read back converged values.
 
     rpicam-vid has no "converge once then hold" mode the way Basler's
-    ExposureAuto=Once does, so this runs AE for real over a brief warm-up
-    clip and reads the last frame's metadata for whichever of shutter/gain
-    was left at 0 (auto); a channel already fixed in cfg is passed through
-    so AE converges against the real operating point.
+    ExposureAuto=Once does, so this runs AE (and, when probe_focus, AF) for
+    real over a brief warm-up clip and reads the last frame's metadata for
+    whichever of shutter/gain/lens-position was left at 0 (auto); a channel
+    already fixed in cfg is passed through so convergence happens against the
+    real operating point.
     """
     with tempfile.TemporaryDirectory() as tmp:
         meta_path = Path(tmp) / "meta.json"
         args = [
-            "rpicam-vid", "--camera", "0",
+            "rpicam-vid", "--camera", rpicam_camera_index(cfg.camera),
             "--width", str(cfg.width), "--height", str(cfg.height),
             "--framerate", str(cfg.framerate),
-            "--nopreview", "--timeout", str(cfg.auto_lock_warmup_ms),
+            "--nopreview", "--timeout", str(warmup_ms),
             "--metadata", str(meta_path), "--metadata-format", "json",
             # Explicit codec: newer rpicam-apps can't infer a container from
             # the extension-less /dev/null path and fails to start at all.
@@ -159,6 +185,8 @@ def _probe_rpicam_exposure(cfg: CaptureConfig) -> tuple[int, float]:
             args += ["--shutter", str(cfg.shutter_us)]
         if cfg.gain > 0:
             args += ["--gain", str(cfg.gain)]
+        if probe_focus:
+            args += ["--autofocus-mode", "auto"]
         try:
             subprocess.run(args, check=True, stdout=subprocess.DEVNULL,
                             stderr=subprocess.PIPE, text=True)
@@ -174,23 +202,41 @@ def _probe_rpicam_exposure(cfg: CaptureConfig) -> tuple[int, float]:
         frame = frame[-1]
     shutter = cfg.shutter_us if cfg.shutter_us > 0 else round(frame["ExposureTime"])
     gain = cfg.gain if cfg.gain > 0 else float(frame["AnalogueGain"])
-    return shutter, gain
+    lens_position = float(frame["LensPosition"]) if probe_focus else cfg.lens_position
+    return shutter, gain, lens_position
 
 
 def resolve_auto_lock(cfg: CaptureConfig) -> CaptureConfig:
-    """For rpicam with auto_lock set, probe converged exposure/gain and
-    return a copy of cfg with shutter_us/gain pinned to those values.
+    """Probe and pin whatever needs converging before a clip starts:
 
-    Basler locks in-process instead (see camrig.basler's --auto-lock), so
-    this is a no-op for that backend, and a no-op when auto_lock is off or
-    both shutter_us and gain are already manual (nothing to converge).
+    * exposure/gain, for either rpicam backend, when auto_lock is set and at
+      least one of shutter_us/gain is still 0 (auto);
+    * lens position, for rpicam-af, whenever it's still 0 (auto) -- the
+      Camera Module 3 always autofocuses once before a clip, independent of
+      auto_lock, since (unlike exposure) there's no manual-lens fallback.
+
+    Both probes share one warm-up capture when both apply. Basler locks
+    exposure in-process instead (see camrig.basler's --auto-lock), so this is
+    a no-op for that backend; also a no-op for rpicam when nothing needs
+    resolving (auto_lock off with manual shutter/gain).
     """
-    if cfg.camera != "rpicam" or not cfg.auto_lock:
+    if cfg.camera not in ("rpicam", "rpicam-af"):
         return cfg
-    if cfg.shutter_us > 0 and cfg.gain > 0:
+    need_exposure = cfg.auto_lock and (cfg.shutter_us <= 0 or cfg.gain <= 0)
+    need_focus = cfg.camera == "rpicam-af" and cfg.lens_position <= 0
+    if not need_exposure and not need_focus:
         return cfg
-    shutter, gain = _probe_rpicam_exposure(cfg)
-    return replace(cfg, shutter_us=shutter, gain=gain)
+    warmup_ms = cfg.auto_lock_warmup_ms
+    if need_focus:
+        warmup_ms = max(warmup_ms, cfg.autofocus_warmup_ms)
+    shutter, gain, lens_position = _probe_rpicam_warmup(cfg, warmup_ms, need_focus)
+    updates: dict = {}
+    if need_exposure:
+        updates["shutter_us"] = shutter
+        updates["gain"] = gain
+    if need_focus:
+        updates["lens_position"] = lens_position
+    return replace(cfg, **updates)
 
 
 def mjpeg_qv(quality: int) -> int:
@@ -285,8 +331,10 @@ def build_commands(
     """
     if cfg.camera == "basler":
         return _build_basler_commands(cfg, basler or BaslerConfig(), paths, duration_ms)
-    if cfg.camera != "rpicam":
-        raise ValueError(f"Unknown camera backend: {cfg.camera!r} (expected rpicam|basler)")
+    if cfg.camera not in ("rpicam", "rpicam-af"):
+        raise ValueError(
+            f"Unknown camera backend: {cfg.camera!r} (expected rpicam|rpicam-af|basler)"
+        )
     profile = cfg.profile
     if profile == "mjpeg":
         rpicam = [
@@ -329,7 +377,7 @@ def build_commands(
     if profile == "raw":
         rpicam = [
             "rpicam-raw",
-            "--camera", "0",
+            "--camera", rpicam_camera_index(cfg.camera),
             "--width", str(cfg.width),
             "--height", str(cfg.height),
             "--framerate", str(cfg.framerate),
@@ -343,6 +391,7 @@ def build_commands(
             rpicam += ["--shutter", str(cfg.shutter_us)]
         if cfg.gain > 0:
             rpicam += ["--gain", str(cfg.gain)]
+        rpicam += _rpicam_af_args(cfg)
         return [rpicam]
 
     raise ValueError(f"Unknown capture profile: {profile!r} (expected one of {PROFILES})")
@@ -377,7 +426,9 @@ def write_metadata(
         "started_at_utc": started_at.astimezone(timezone.utc).isoformat(),
         "capture": asdict(cfg),
         "camera": cfg.camera,
-        "sensor": "imx296" if cfg.camera == "rpicam" else "basler-ace2-mono",
+        "sensor": {
+            "rpicam": "imx296", "rpicam-af": "imx708", "basler": "basler-ace2-mono",
+        }[cfg.camera],
     }
     if extra:
         meta.update(extra)
@@ -457,9 +508,13 @@ def record_clip(
     if dry_run:
         commands = build_commands(cfg, partial, duration_ms, basler=basler)
         log.info("Capture (%s): %s", trigger, describe_commands(commands))
-        if cfg.camera == "rpicam" and cfg.auto_lock and (cfg.shutter_us <= 0 or cfg.gain <= 0):
+        if (cfg.camera in ("rpicam", "rpicam-af") and cfg.auto_lock
+                and (cfg.shutter_us <= 0 or cfg.gain <= 0)):
             print("(auto-lock: a warm-up capture probes exposure/gain first, then the "
                   "clip below runs with --shutter/--gain pinned to the converged values)")
+        if cfg.camera == "rpicam-af" and cfg.lens_position <= 0:
+            print("(autofocus: a warm-up capture focuses first, then the clip below runs "
+                  "with --lens-position pinned to the converged value)")
         print(describe_commands(commands))
         return paths
 

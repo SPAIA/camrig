@@ -1,12 +1,17 @@
 """Live focus-assist server for manual-focus C/CS-mount lenses.
 
-Both cameras (IMX296 Global Shutter and Basler ace 2) use manual lenses whose
-focus is set by turning the lens ring — there is no autofocus. On a headless Pi
-reached over Tailscale there is no local display to focus against, so this
-module serves a low-latency MJPEG live view over HTTP plus a live sharpness
-readout: open the printed URL in a browser on your laptop and turn the lens
-ring until the focus score peaks (an optional audio tone rises in pitch as
-focus improves, so you can watch the lens instead of the screen).
+Two of the three cameras (IMX296 Global Shutter and Basler ace 2) use manual
+lenses whose focus is set by turning the lens ring — there is no autofocus.
+On a headless Pi reached over Tailscale there is no local display to focus
+against, so this module serves a low-latency MJPEG live view over HTTP plus a
+live sharpness readout: open the printed URL in a browser on your laptop and
+turn the lens ring until the focus score peaks (an optional audio tone rises
+in pitch as focus improves, so you can watch the lens instead of the screen).
+
+The third camera (rpicam-af, Camera Module 3) autofocuses itself before every
+recording instead (see resolve_auto_lock() in record.py) — this page still
+works for it as a plain live view (handy for framing), just without a
+sharpness score to chase, since there's no lens ring to turn.
 
 Design notes:
 
@@ -52,7 +57,7 @@ from .config import (
     set_config_value,
 )
 from . import storage
-from .record import mjpeg_qv, record_clip
+from .record import mjpeg_qv, record_clip, rpicam_camera_index
 
 log = logging.getLogger("camrig.focus")
 
@@ -131,7 +136,7 @@ def build_focus_commands(
 
     args = [
         "rpicam-vid",
-        "--camera", "0",
+        "--camera", rpicam_camera_index(cfg.camera),
         "--width", str(cfg.width),
         "--height", str(cfg.height),
         "--framerate", str(cfg.framerate),
