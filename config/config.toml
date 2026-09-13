@@ -30,7 +30,7 @@ quality = 95
 
 # Manual exposure for a repeatable test rig. Short shutter freezes insect motion
 # but needs adequate light. 0 = let the camera auto-expose (capped by framerate).
-shutter_us = 2000
+shutter_us = 0
 
 # Sensor gain. 0 = auto. Increase if shutter_us is too short for the lighting.
 # Unit differs by backend: rpicam = analogue gain multiplier; basler = dB.
@@ -40,7 +40,7 @@ gain = 0.0
 # the start of each clip, then hold it fixed for the rest of that clip --
 # steady exposure without the AE algorithm hunting mid-recording. No effect
 # if both shutter_us and gain are manual.
-auto_lock = false
+auto_lock = true
 
 # Max time (ms) to let auto-exposure/gain converge before locking: basler
 # polls for this long, rpicam runs a discarded warm-up capture of this
