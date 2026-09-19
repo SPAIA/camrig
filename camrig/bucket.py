@@ -122,7 +122,7 @@ def postprocess_clip(
 def debug_motion_clip(
     cfg: Config, host: str, day: str, clip_name: str, dest: Path,
     *, output: Path | None = None, fps: float | None = None,
-    trail_seconds: float = 3.0, dry_run: bool = False,
+    trail_seconds: float | None = None, dry_run: bool = False,
 ) -> bool:
     """Fetch one clip + its .motion.json from the bucket and render the debug preview locally.
 

@@ -93,11 +93,16 @@ class PostprocessConfig:
     nice: int = 10
     # Insect-vs-plant discriminators (camrig.motion tracks: straightness = net
     # displacement / path length, chronic = how persistently active a blob's
-    # cells stayed). Not applied by the analysis itself yet -- for now these
-    # only drive the camrig.motion_view filter sliders, tuned there and
-    # persisted here so they survive between sessions. 0.0/1.0 = no filtering.
+    # cells stayed). Not applied by the analysis itself -- these drive the
+    # camrig.motion_view filter sliders and the camrig.motion_debug trail
+    # filter, tuned in motion_view and persisted here so they survive between
+    # sessions. 0.0/1.0 = no filtering.
     min_straightness: float = 0.0
     max_chronic: float = 1.0
+    # How long a track's trail stays visible before fading, shared by
+    # camrig.motion_debug (rendered mp4) and camrig.motion_view (live preview)
+    # so the two always look alike.
+    trail_seconds: float = 4.0
 
 
 @dataclass
@@ -144,6 +149,13 @@ class LedConfig:
     flashes: int = 3
     on_ms: int = 150
     off_ms: int = 150
+    # Pulse the LED briefly on a steady cadence for as long as the
+    # supervisor process is alive -- lets you tell "board has power" apart
+    # from "camrig is actually running" at a glance, closing the gap where
+    # a crashed/hung rig otherwise looks identical to a working one.
+    heartbeat: bool = True
+    heartbeat_interval_seconds: float = 2.0
+    heartbeat_pulse_ms: int = 100
 
 
 @dataclass

@@ -7,7 +7,14 @@ and ``.motion.json`` as-is, and draws trails/blobs client-side on a `<canvas>`
 layered over the `<video>`. Threshold sliders filter which tracks are drawn
 live, in the browser; changes are persisted into ``config.toml``
 (``[postprocess] min_straightness`` / ``max_chronic``) so they survive
-between sessions -- open a URL printed at start-up, over Tailscale.
+between sessions -- open a URL printed at start-up, over Tailscale. Trail
+length/thickness match ``[postprocess] trail_seconds`` and
+``camrig.motion_debug``'s rendered look, so this preview and the mp4 agree.
+
+Click a trail to label its track ground-truth (insect/other/unsure, or the
+``i``/``o``/``u`` shortcuts) -- see ``camrig.labels`` for the sidecar this
+writes. Labelling against real footage gives an objective way to check
+whether a threshold change actually helps, instead of eyeballing it.
 
     camrig motion-view clip.mkv
 
@@ -24,7 +31,9 @@ import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from . import trim as trim_mod
 from .config import Config, set_config_value
+from .labels import LABELS, append_label, load_labels, remap_labels
 from .motion_debug import load_motion, motion_path
 from .postprocess import preview_path
 
@@ -53,12 +62,14 @@ def _local_urls(port: int) -> list[str]:
     return urls
 
 
-def _page(clip_name: str, fps: float, min_straightness: float, max_chronic: float) -> str:
+def _page(clip_name: str, fps: float, min_straightness: float, max_chronic: float,
+          trail_seconds: float) -> str:
     return _PAGE_TEMPLATE \
         .replace("__CLIP__", clip_name) \
         .replace("__FPS__", repr(fps)) \
         .replace("__MIN_STRAIGHTNESS__", repr(min_straightness)) \
-        .replace("__MAX_CHRONIC__", repr(max_chronic))
+        .replace("__MAX_CHRONIC__", repr(max_chronic)) \
+        .replace("__TRAIL_SECONDS__", repr(trail_seconds))
 
 
 _PAGE_TEMPLATE = """<!doctype html>
@@ -78,10 +89,37 @@ content="width=device-width,initial-scale=1">
   #saveStatus{font-size:11px;color:#8b93a1;min-width:6ch}
   .wrap{position:relative;max-width:1100px;margin:0 auto;background:#000}
   video{display:block;width:100%}
-  canvas#overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  canvas#overlay{position:absolute;inset:0;width:100%;height:100%;cursor:pointer}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;
+    align-items:center;justify-content:center;z-index:10}
+  .modal.hidden{display:none}
+  .modalBox{background:#12161c;border:1px solid #333;border-radius:10px;
+    padding:1rem 1.2rem;min-width:220px;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+  .modalBox h2{font-size:14px;margin:0 0 .6rem;font-weight:600}
+  .modalStats{display:flex;flex-direction:column;gap:.2rem;font-size:12px;
+    color:#aeb6c2;margin-bottom:.8rem}
+  .modalButtons{display:flex;gap:.5rem}
+  .modalButtons button{flex:1}
+  kbd{background:#232a34;border:1px solid #333;border-radius:4px;padding:0 .3rem;
+    font-size:11px;margin-left:.3rem}
+  .modalHint{margin-top:.6rem;font-size:11px;color:#8b93a1;text-align:center}
   .transport{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;
     padding:.6rem .9rem;background:#12161c;border-top:1px solid #222}
   .transport input[type=range]{flex:1;width:auto;min-width:120px}
+  .seekWrap{position:relative;flex:1;display:flex;align-items:center;min-width:120px}
+  .seekWrap input[type=range]{width:100%}
+  .cutmarks{position:absolute;left:0;right:0;top:50%;height:5px;margin-top:-2px;
+    pointer-events:none}
+  .cutmarks span{position:absolute;top:0;height:100%;background:#db4437;
+    opacity:.85;border-radius:2px}
+  .cuttools{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;
+    padding:.5rem .9rem;background:#12161c;border-top:1px solid #222}
+  .cutlist{display:flex;gap:.4rem;flex-wrap:wrap;flex:1}
+  .cutchip{background:#232a34;border:1px solid #db4437;border-radius:12px;
+    padding:.15rem .5rem;font-size:11px;display:flex;gap:.4rem;align-items:center}
+  .cutchip button{background:none;border:none;color:#db4437;padding:0;
+    font-size:13px;cursor:pointer;line-height:1}
+  #cutStatus{font-size:11px;color:#8b93a1}
   button{background:#232a34;color:#e6e9ef;border:1px solid #333;border-radius:6px;
     padding:.35rem .6rem;cursor:pointer;font-size:12px}
   #time{font-variant-numeric:tabular-nums;font-size:12px;color:#aeb6c2;white-space:nowrap}
@@ -90,7 +128,7 @@ content="width=device-width,initial-scale=1">
 <body>
 <header>
   <h1>camrig motion-view</h1>
-  <label><input type="checkbox" id="trails" checked> trails</label>
+  <label><input type="checkbox" id="trails" checked> trails<kbd>t</kbd></label>
   <label>min straightness
     <input type="range" id="minStraightness" min="0" max="1" step="0.01">
     <span class="val" id="minStraightnessVal"></span>
@@ -106,23 +144,57 @@ content="width=device-width,initial-scale=1">
   <video id="v" src="/clip.mp4" preload="auto"></video>
   <canvas id="overlay"></canvas>
 </div>
+<div id="labelModal" class="modal hidden">
+  <div class="modalBox">
+    <h2>Label track <span id="lblTrackId"></span></h2>
+    <div class="modalStats">
+      <div>straightness <b id="lblStraightness"></b></div>
+      <div>chronic <b id="lblChronic"></b></div>
+      <div>duration <b id="lblDuration"></b></div>
+    </div>
+    <div class="modalButtons">
+      <button data-label="insect" style="border-left:3px solid #0f9d58">Insect<kbd>i</kbd></button>
+      <button data-label="other" style="border-left:3px solid #db4437">Other<kbd>o</kbd></button>
+      <button data-label="unsure" style="border-left:3px solid #f4b400">Unsure<kbd>u</kbd></button>
+    </div>
+    <div class="modalHint">Esc to cancel</div>
+  </div>
+</div>
 <div class="transport">
   <button id="playpause">Play</button>
   <button id="back10">&laquo;10</button>
   <button id="back1">&lsaquo;1</button>
-  <input type="range" id="seek" min="0" max="1000" value="0" step="1">
+  <div class="seekWrap">
+    <input type="range" id="seek" min="0" max="1000" value="0" step="1">
+    <div class="cutmarks" id="cutMarks"></div>
+  </div>
   <button id="fwd1">1&rsaquo;</button>
   <button id="fwd10">10&raquo;</button>
   <span id="time">--</span>
 </div>
+<div class="cuttools">
+  <button id="cutIn">Mark cut-in<kbd>[</kbd></button>
+  <button id="cutOut">Mark cut-out<kbd>]</kbd></button>
+  <div class="cutlist" id="cutList"></div>
+  <button id="applyCuts" disabled>Apply cuts</button>
+  <span id="cutStatus"></span>
+</div>
 <div class="hint">
   Left/Right arrow: step 1 frame. Shift+Left/Right: step 10. Space: play/pause.
-  Grey boxes are every raw per-window detection; coloured trails are linked
-  tracks passing the threshold sliders, fading out after a few frames.
+  T: toggle trails. Grey boxes are every raw per-window detection; coloured
+  trails are linked tracks passing the threshold sliders, fading out after a
+  few frames. Labelled tracks are coloured by label:
+  <span style="color:#0f9d58">insect</span>,
+  <span style="color:#db4437">other</span>,
+  <span style="color:#f4b400">unsure</span>.
+  <br>Mark cut-in/cut-out (<kbd>[</kbd>/<kbd>]</kbd>) to queue a section of the
+  raw clip for deletion, then Apply -- this permanently removes it from the
+  clip on disk (lossless, but not undoable) and drops any label caught inside
+  it. Re-run <code>camrig postprocess --force</code> afterwards.
 </div>
 <script>
 const FPS = __FPS__;
-const TRAIL_SECONDS = 0.8;
+const TRAIL_SECONDS = __TRAIL_SECONDS__;
 let minStraightness = __MIN_STRAIGHTNESS__;
 let maxChronic = __MAX_CHRONIC__;
 let showTrails = true;
@@ -132,9 +204,12 @@ const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
 const seek = document.getElementById('seek');
 const timeEl = document.getElementById('time');
-const PALETTE = ['#4285f4','#db4437','#f4b400','#0f9d58','#ab47bc','#00acc1','#ff5722','#9e9d24'];
+const PALETTE = ['#4285f4','#ab47bc','#00acc1','#ff5722','#9e9d24'];
+const LABEL_COLORS = {insect: '#0f9d58', other: '#db4437', unsure: '#f4b400'};
 
 let motion = null, frameWindows = [], windowFrames = 6;
+let drawnTracks = [];  // this frame's {ti, track, pts} that passed the filter, for click-to-label
+const labeledTracks = new Map();  // source_track -> label, from saved labels.jsonl
 
 fetch('/motion.json').then(r => r.json()).then(m => {
   motion = m;
@@ -144,6 +219,10 @@ fetch('/motion.json').then(r => r.json()).then(m => {
   m.windows.forEach((w, wi) => { for (let i = 0; i < w.n_frames; i++) frameWindows.push(wi); });
   document.getElementById('trackCount').textContent = m.tracks.length + ' tracks';
   requestAnimationFrame(loop);
+});
+
+fetch('/labels').then(r => r.json()).then(rows => {
+  rows.forEach(r => labeledTracks.set(r.source_track, r.label));
 });
 
 function windowAt(t) {
@@ -161,6 +240,7 @@ function draw(wIdx) {
     const [x, y, w, h] = b.bbox;
     ctx.strokeRect(x + 0.5, y + 0.5, w, h);
   }
+  drawnTracks = [];
   if (!showTrails) return;
   const trailWindows = Math.max(1, Math.round(TRAIL_SECONDS * FPS / windowFrames));
   motion.tracks.forEach((t, ti) => {
@@ -170,8 +250,9 @@ function draw(wIdx) {
     const idxEnd = relIdx;
     const idxStart = Math.max(0, idxEnd - trailWindows + 1);
     const pts = t.path.slice(idxStart, idxEnd + 1);
-    const color = PALETTE[ti % PALETTE.length];
-    ctx.lineWidth = 1;
+    const label = labeledTracks.get(ti);
+    const color = LABEL_COLORS[label] || PALETTE[ti % PALETTE.length];
+    ctx.lineWidth = 2;
     for (let i = 1; i < pts.length; i++) {
       ctx.strokeStyle = color;
       ctx.globalAlpha = i / (pts.length - 1);
@@ -184,8 +265,16 @@ function draw(wIdx) {
     const [cx, cy] = pts[pts.length - 1];
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.arc(cx, cy, 2, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
     ctx.fill();
+    if (labeledTracks.has(ti)) {
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    drawnTracks.push({ti, track: t, pts});
   });
 }
 
@@ -221,6 +310,93 @@ function step(n) {
   video.pause();
   video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + n / FPS));
 }
+function currentFrame() {
+  return Math.round(video.currentTime * FPS);
+}
+
+let cutStart = null;  // frame index waiting for its cut-out, or null
+let pendingCuts = [];  // [{startFrame, endFrame}], oldest first
+const cutInBtn = document.getElementById('cutIn');
+const cutOutBtn = document.getElementById('cutOut');
+const cutListEl = document.getElementById('cutList');
+const applyCutsBtn = document.getElementById('applyCuts');
+const cutStatus = document.getElementById('cutStatus');
+const cutMarks = document.getElementById('cutMarks');
+
+function renderCuts() {
+  cutListEl.innerHTML = '';
+  pendingCuts.forEach((c, i) => {
+    const chip = document.createElement('span');
+    chip.className = 'cutchip';
+    chip.textContent = fmtTime(c.startFrame / FPS) + '–' + fmtTime(c.endFrame / FPS);
+    const rm = document.createElement('button');
+    rm.textContent = '✕';
+    rm.title = 'remove this cut';
+    rm.onclick = () => { pendingCuts.splice(i, 1); renderCuts(); };
+    chip.appendChild(rm);
+    cutListEl.appendChild(chip);
+  });
+  applyCutsBtn.disabled = pendingCuts.length === 0;
+  applyCutsBtn.textContent = pendingCuts.length ? `Apply ${pendingCuts.length} cut(s)` : 'Apply cuts';
+  cutMarks.innerHTML = '';
+  const max = parseFloat(seek.max) || 1;
+  pendingCuts.forEach(c => {
+    const span = document.createElement('span');
+    span.style.left = (100 * c.startFrame / max) + '%';
+    span.style.width = Math.max(0.3, 100 * (c.endFrame - c.startFrame) / max) + '%';
+    cutMarks.appendChild(span);
+  });
+}
+
+function markCutIn() {
+  cutStart = currentFrame();
+  cutStatus.textContent = 'cut-in @ f' + cutStart + ' -- now mark cut-out';
+}
+
+function markCutOut() {
+  if (cutStart === null) { cutStatus.textContent = 'mark cut-in first'; return; }
+  const end = currentFrame();
+  if (end <= cutStart) { cutStatus.textContent = 'cut-out must be after cut-in'; return; }
+  pendingCuts.push({startFrame: cutStart, endFrame: end});
+  cutStart = null;
+  cutStatus.textContent = '';
+  renderCuts();
+}
+
+cutInBtn.onclick = markCutIn;
+cutOutBtn.onclick = markCutOut;
+
+applyCutsBtn.onclick = () => {
+  if (!pendingCuts.length) return;
+  const totalFrames = pendingCuts.reduce((s, c) => s + (c.endFrame - c.startFrame), 0);
+  const ok = confirm(
+    `Permanently delete ${pendingCuts.length} section(s), ` +
+    `${(totalFrames / FPS).toFixed(1)}s total, from the raw clip on disk? This cannot be undone.`
+  );
+  if (!ok) return;
+  applyCutsBtn.disabled = true;
+  cutStatus.textContent = 'applying...';
+  fetch('/trim', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cuts: pendingCuts.map(c => [c.startFrame, c.endFrame])}),
+  }).then(r => r.json()).then(j => {
+    if (j.ok) {
+      pendingCuts = [];
+      cutStart = null;
+      renderCuts();
+      cutStatus.textContent = 'cut applied';
+      let msg = `Cut applied: ${j.frames_before} -> ${j.frames_after} frames.`;
+      if (j.labels_dropped) msg += ` ${j.labels_dropped} label(s) dropped (fell inside a cut).`;
+      msg += ' Run `camrig postprocess <clip> --force`, then reload this page.';
+      alert(msg);
+    } else {
+      cutStatus.textContent = 'failed: ' + j.error;
+      applyCutsBtn.disabled = false;
+    }
+  }).catch(() => { cutStatus.textContent = 'apply failed'; applyCutsBtn.disabled = false; });
+};
+
 document.getElementById('back10').onclick = () => step(-10);
 document.getElementById('back1').onclick = () => step(-1);
 document.getElementById('fwd1').onclick = () => step(1);
@@ -229,14 +405,113 @@ document.getElementById('playpause').onclick = () => { video.paused ? video.play
 video.addEventListener('play', () => { document.getElementById('playpause').textContent = 'Pause'; });
 video.addEventListener('pause', () => { document.getElementById('playpause').textContent = 'Play'; });
 
-window.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT') return;
-  if (e.key === 'ArrowLeft') { step(e.shiftKey ? -10 : -1); e.preventDefault(); }
-  else if (e.key === 'ArrowRight') { step(e.shiftKey ? 10 : 1); e.preventDefault(); }
-  else if (e.key === ' ') { video.paused ? video.play() : video.pause(); e.preventDefault(); }
+const modal = document.getElementById('labelModal');
+const lblTrackId = document.getElementById('lblTrackId');
+const lblStraightness = document.getElementById('lblStraightness');
+const lblChronic = document.getElementById('lblChronic');
+const lblDuration = document.getElementById('lblDuration');
+let selected = null;  // {ti, track, pts} of the track pending a label
+
+canvas.addEventListener('click', (e) => {
+  if (!drawnTracks.length) return;
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const cx = (e.clientX - rect.left) * scaleX;
+  const cy = (e.clientY - rect.top) * scaleY;
+  const hitRadius = 14;
+  let best = null, bestDist = hitRadius;
+  for (const dt of drawnTracks) {
+    for (const [px, py] of dt.pts) {
+      const d = Math.hypot(px - cx, py - cy);
+      if (d < bestDist) { bestDist = d; best = dt; }
+    }
+  }
+  if (best) openLabelModal(best);
 });
 
-document.getElementById('trails').addEventListener('change', (e) => {
+function openLabelModal(dt) {
+  selected = dt;
+  video.pause();
+  lblTrackId.textContent = dt.ti;
+  lblStraightness.textContent = dt.track.straightness.toFixed(2);
+  lblChronic.textContent = dt.track.chronic.toFixed(2);
+  lblDuration.textContent = (dt.track.n * windowFrames / FPS).toFixed(2) + 's';
+  modal.classList.remove('hidden');
+}
+
+function closeModal() {
+  modal.classList.add('hidden');
+  selected = null;
+}
+
+function saveLabel(label) {
+  if (!selected) return;
+  const t = selected.track;
+  const path = t.path.map((p, i) => {
+    const w = motion.windows[t.w0 + i];
+    const time = (w.f + w.n_frames / 2) / FPS;
+    return [
+      Math.round(p[0] / motion.width * 1000) / 1000,
+      Math.round(p[1] / motion.height * 1000) / 1000,
+      Math.round(time * 1000) / 1000,
+    ];
+  });
+  const record = {
+    label,
+    source_track: selected.ti,
+    source_analysis: motion.analysis || 'blob-track-v1',
+    t0: path[0][2],
+    t1: path[path.length - 1][2],
+    path,
+  };
+  fetch('/label', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(record),
+  }).then(r => r.json()).then(j => {
+    if (j.ok) {
+      labeledTracks.set(selected.ti, label);
+      closeModal();
+    } else {
+      alert('save failed: ' + j.error);
+    }
+  }).catch(() => alert('save failed'));
+}
+
+document.querySelectorAll('#labelModal button[data-label]').forEach(btn => {
+  btn.addEventListener('click', () => saveLabel(btn.dataset.label));
+});
+
+window.addEventListener('keydown', (e) => {
+  if (!modal.classList.contains('hidden')) {
+    if (e.key === 'Escape') { closeModal(); e.preventDefault(); }
+    else if (e.key === 'i' || e.key === 'I') { saveLabel('insect'); e.preventDefault(); }
+    else if (e.key === 'o' || e.key === 'O') { saveLabel('other'); e.preventDefault(); }
+    else if (e.key === 'u' || e.key === 'U') { saveLabel('unsure'); e.preventDefault(); }
+    return;
+  }
+  // Arrow keys and space have a native meaning on a focused range/checkbox
+  // input (nudge the slider, toggle the box) -- defer to that rather than
+  // also stepping the video, so tabbing/clicking into a slider doesn't
+  // double-handle those two keys. Every other shortcut (t, [, ]) is generic:
+  // it fires no matter what's focused, so clicking a slider never silently
+  // disables it until you click back into the video.
+  const onFormControl = e.target.tagName === 'INPUT';
+  if (e.key === 'ArrowLeft') { if (onFormControl) return; step(e.shiftKey ? -10 : -1); e.preventDefault(); }
+  else if (e.key === 'ArrowRight') { if (onFormControl) return; step(e.shiftKey ? 10 : 1); e.preventDefault(); }
+  else if (e.key === ' ') { if (onFormControl) return; video.paused ? video.play() : video.pause(); e.preventDefault(); }
+  else if (e.key === 't' || e.key === 'T') { toggleTrails(); e.preventDefault(); }
+  else if (e.key === '[') { markCutIn(); e.preventDefault(); }
+  else if (e.key === ']') { markCutOut(); e.preventDefault(); }
+});
+
+const trailsCheckbox = document.getElementById('trails');
+function toggleTrails() {
+  showTrails = !showTrails;
+  trailsCheckbox.checked = showTrails;
+}
+trailsCheckbox.addEventListener('change', (e) => {
   showTrails = e.target.checked;
 });
 
@@ -293,20 +568,28 @@ class _Handler(BaseHTTPRequestHandler):
             self._serve_file(preview_path(self.video), "video/mp4")
         elif path == "/motion.json":
             self._serve_file(motion_path(self.video), "application/json")
+        elif path == "/labels":
+            self._json_response(200, load_labels(self.video))
         else:
             self.send_error(404)
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path.split("?", 1)[0] != "/thresholds":
+        path = self.path.split("?", 1)[0]
+        if path == "/thresholds":
+            self._save_thresholds()
+        elif path == "/label":
+            self._save_label()
+        elif path == "/trim":
+            self._save_trim()
+        else:
             self.send_error(404)
-            return
-        self._save_thresholds()
 
     def _serve_page(self) -> None:
         cfg = self.cfg
         body = _page(
             self.video.name, cfg.capture.framerate,
             cfg.postprocess.min_straightness, cfg.postprocess.max_chronic,
+            cfg.postprocess.trail_seconds,
         ).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -386,7 +669,71 @@ class _Handler(BaseHTTPRequestHandler):
         self.cfg.postprocess.max_chronic = max_chronic
         self._json_response(200, {"ok": True})
 
-    def _json_response(self, status: int, payload: dict) -> None:
+    def _save_label(self) -> None:
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            record = json.loads(self.rfile.read(length) or b"{}")
+            if record.get("label") not in LABELS:
+                raise ValueError(f"label must be one of {LABELS}")
+            source_track = int(record["source_track"])
+            source_analysis = str(record["source_analysis"])
+            t0 = float(record["t0"])
+            t1 = float(record["t1"])
+            path = record["path"]
+            if not isinstance(path, list) or not path:
+                raise ValueError("path must be a non-empty list")
+            for pt in path:
+                x, y, _t = pt
+                if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                    raise ValueError("path x/y must be normalised to 0..1")
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            self._json_response(400, {"ok": False, "error": str(exc)})
+            return
+
+        try:
+            append_label(self.video, {
+                "label": record["label"],
+                "source_track": source_track,
+                "source_analysis": source_analysis,
+                "t0": t0,
+                "t1": t1,
+                "path": path,
+            })
+        except OSError as exc:
+            log.warning("Could not persist label to %s: %s", self.video, exc)
+            self._json_response(200, {"ok": False, "error": f"could not write sidecar: {exc}"})
+            return
+
+        self._json_response(200, {"ok": True})
+
+    def _save_trim(self) -> None:
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+            raw_cuts = body["cuts"]
+            if not isinstance(raw_cuts, list) or not raw_cuts:
+                raise ValueError("cuts must be a non-empty list")
+            cuts = [(int(c[0]), int(c[1])) for c in raw_cuts]
+        except (ValueError, KeyError, TypeError, IndexError, json.JSONDecodeError) as exc:
+            self._json_response(400, {"ok": False, "error": str(exc)})
+            return
+
+        try:
+            result = trim_mod.apply_cuts(self.video, self.cfg.capture.framerate, cuts)
+        except (ValueError, RuntimeError) as exc:
+            log.warning("Trim failed for %s: %s", self.video, exc)
+            self._json_response(200, {"ok": False, "error": str(exc)})
+            return
+
+        _, dropped = remap_labels(self.video, self.cfg.capture.framerate, result.frame_map)
+        self._json_response(200, {
+            "ok": True,
+            "frames_before": result.frames_before,
+            "frames_after": result.frames_after,
+            "labels_dropped": len(dropped),
+        })
+
+    def _json_response(self, status: int, payload: dict | list) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")

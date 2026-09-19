@@ -329,6 +329,11 @@ class Supervisor:
         tasks = [asyncio.create_task(self._scheduler_loop())]
         if self.cfg.startup.record:
             tasks.append(asyncio.create_task(self._startup_capture()))
+        if self.cfg.led.heartbeat:
+            tasks.append(asyncio.create_task(led.heartbeat(
+                interval_seconds=self.cfg.led.heartbeat_interval_seconds,
+                pulse_ms=self.cfg.led.heartbeat_pulse_ms,
+            )))
         if cloudlink is not None:
             tasks.append(asyncio.create_task(cloudlink.run()))
         log.info("Supervisor running (storage=%s)", self.base)

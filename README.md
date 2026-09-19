@@ -163,6 +163,17 @@ This masks the symptom (needing physical access) rather than fixing the root
 cause — treat a string of watchdog reboots as a signal to dig into power
 supply headroom, thermals, or a specific driver, not as "solved."
 
+**LED heartbeat** — none of the above is visible from next to the rig: the
+onboard LED otherwise only flashes briefly right before a capture (`[led]`
+`flashes`/`on_ms`/`off_ms` in `config.toml`), so a crash between flashes
+looks identical to a working rig with power. `[led] heartbeat = true`
+(default) has the supervisor pulse the LED on a steady cadence
+(`heartbeat_interval_seconds`/`heartbeat_pulse_ms`, default a 100ms pulse
+every 2s) for as long as it's alive — a dark or static LED with the board
+otherwise powered means the supervisor has crashed or hung, not that
+everything's fine. Implemented in `camrig/led.py`; shares the LED with the
+capture-cue flash via a lock so the two never write brightness out of turn.
+
 ## Storage
 
 Prefers a dedicated NVMe mountpoint (`storage.nvme_mount`, default `/mnt/nvme`) for

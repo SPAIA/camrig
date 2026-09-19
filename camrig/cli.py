@@ -4,6 +4,7 @@ Subcommands:
   supervise   Run the long-lived capture supervisor + Cloudflare link (service).
   record      Record a single clip now (testing / manual; supports --dry-run).
   postprocess Generate preview + motion sidecars (one clip, or all pending).
+  trim        Cut sections out of a clip in place (lossless) to save space/time.
   debug-motion Render motion tracks/blobs onto a clip for visual QA (on-demand).
   bucket-postprocess   Postprocess a clip that lives only in the R2 bucket.
   bucket-debug-motion  Render a debug preview for a clip that lives only in the R2 bucket.
@@ -84,6 +85,46 @@ def _cmd_postprocess(args, cfg) -> int:
             cfg, base, force=args.force, dry_run=args.dry_run
         )
     return 0 if ok else 1
+
+
+def _cmd_trim(args, cfg) -> int:
+    from pathlib import Path
+    from . import labels, trim
+
+    video = Path(args.clip)
+    fps = cfg.capture.framerate
+    cuts = []
+    for spec in args.cut:
+        try:
+            start_s, end_s = spec.split("-", 1)
+            cuts.append((round(float(start_s) * fps), round(float(end_s) * fps)))
+        except ValueError:
+            print(f"bad --cut {spec!r}; expected START-END in seconds", file=sys.stderr)
+            return 1
+
+    if args.dry_run:
+        for cmd in trim.describe_cuts(video, fps, cuts):
+            print(" ".join(cmd))
+        return 0
+
+    try:
+        result = trim.apply_cuts(video, fps, cuts)
+    except (ValueError, RuntimeError) as exc:
+        print(f"trim failed: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"{video.name}: {result.frames_before} -> {result.frames_after} frames "
+          f"({result.frames_before - result.frames_after} cut)")
+
+    _, dropped = labels.remap_labels(video, fps, result.frame_map)
+    if dropped:
+        print(f"{len(dropped)} label(s) dropped (fell inside a cut):")
+        for d in dropped:
+            print(f"  {d['label']} track={d['source_track']} t0={d['t0']} t1={d['t1']}")
+
+    print("Stale preview/motion sidecars removed; run "
+          f"`camrig postprocess {video} --force` before reopening motion-view.")
+    return 0
 
 
 def _cmd_debug_motion(args, cfg) -> int:
@@ -244,13 +285,22 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true", help="print the commands, do not run")
     p.set_defaults(func=_cmd_postprocess)
 
+    p = sub.add_parser("trim",
+                       help="cut sections out of a clip in place (lossless) to save space/time")
+    p.add_argument("clip", help="path to a .mkv clip (its .pts sidecar must exist)")
+    p.add_argument("--cut", action="append", default=[], metavar="START-END",
+                   help="seconds range to remove (repeatable), e.g. --cut 12.0-14.5")
+    p.add_argument("--dry-run", action="store_true", help="print the ffmpeg commands, do not run")
+    p.set_defaults(func=_cmd_trim)
+
     p = sub.add_parser("debug-motion",
                        help="render motion tracks/blobs onto a clip for visual QA")
     p.add_argument("clip", help="path to a .mkv clip (its .motion.json sidecar must exist)")
     p.add_argument("-o", "--output", help="output path (default: <clip>.motion_debug.mp4)")
     p.add_argument("--fps", type=float, help="output frame rate (default: capture.framerate)")
-    p.add_argument("--trail-seconds", type=float, default=3.0,
-                   help="how long a track's trail stays visible before fading (default 3.0)")
+    p.add_argument("--trail-seconds", type=float, default=None,
+                   help="how long a track's trail stays visible before fading "
+                        "(default: [postprocess] trail_seconds in config.toml)")
     p.add_argument("--dry-run", action="store_true", help="print the ffmpeg commands, do not run")
     p.set_defaults(func=_cmd_debug_motion)
 
@@ -273,8 +323,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dest", help="local scratch dir to fetch into (default: a temp dir)")
     p.add_argument("-o", "--output", help="output path (default: <dest>/<clip>.motion_debug.mp4)")
     p.add_argument("--fps", type=float, help="output frame rate (default: capture.framerate)")
-    p.add_argument("--trail-seconds", type=float, default=3.0,
-                   help="how long a track's trail stays visible before fading (default 3.0)")
+    p.add_argument("--trail-seconds", type=float, default=None,
+                   help="how long a track's trail stays visible before fading "
+                        "(default: [postprocess] trail_seconds in config.toml)")
     p.add_argument("--dry-run", action="store_true", help="print the commands, do not run")
     p.set_defaults(func=_cmd_bucket_debug_motion)
 

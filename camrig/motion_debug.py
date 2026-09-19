@@ -9,6 +9,8 @@ Decodes the clip at the motion-analysis resolution, so blob/track coordinates
 from the sidecar need no rescaling. Each window's blobs are drawn as grey
 boxes; each multi-window track gets a coloured trail with a dot at its current
 position, fading out (--trail-seconds) rather than persisting for the clip.
+Tracks are filtered by the same ``[postprocess] min_straightness`` /
+``max_chronic`` thresholds used by ``camrig.motion_view``.
 
     camrig debug-motion clip.mkv
     python -m camrig.motion_debug clip.mkv -o clip.debug.mp4
@@ -136,12 +138,13 @@ def load_motion(video: Path) -> dict | None:
 
 def render(
     cfg: Config, video: Path, motion: dict, output: Path,
-    *, fps: float | None = None, trail_seconds: float = 3.0, dry_run: bool = False,
+    *, fps: float | None = None, trail_seconds: float | None = None, dry_run: bool = False,
 ) -> bool:
     """Draw motion.json's blobs/tracks onto video, writing an annotated preview."""
     width, height = motion["width"], motion["height"]
     windows, tracks = motion["windows"], motion["tracks"]
     out_fps = fps or cfg.capture.framerate
+    trail_seconds = trail_seconds if trail_seconds is not None else cfg.postprocess.trail_seconds
     window_frames = motion.get("params", {}).get("window", 6)
     trail_windows = max(round(trail_seconds * out_fps / window_frames), 1)
 
@@ -170,6 +173,10 @@ def render(
         trail_canvas.fill(0)
         trail_mask.fill(False)
         for ti, track in enumerate(tracks):
+            if track["straightness"] < cfg.postprocess.min_straightness:
+                continue
+            if track["chronic"] > cfg.postprocess.max_chronic:
+                continue
             w0 = track["w0"]
             if w_idx < w0:
                 continue
@@ -178,11 +185,11 @@ def render(
             pts = track["path"][idx_start:idx_end + 1]
             color = _PALETTE[ti % len(_PALETTE)]
             for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
-                _draw_line(trail_canvas, round(x0), round(y0), round(x1), round(y1), color, 1,
+                _draw_line(trail_canvas, round(x0), round(y0), round(x1), round(y1), color, 2,
                           mask=trail_mask)
             if pts:
                 cx, cy = pts[-1]
-                _draw_circle(trail_canvas, round(cx), round(cy), 2, color, mask=trail_mask)
+                _draw_circle(trail_canvas, round(cx), round(cy), 3, color, mask=trail_mask)
 
     frame_idx = 0
     prev_w_idx = -1
@@ -225,7 +232,7 @@ def render(
 
 
 def run(cfg: Config, video: Path, *, output: Path | None = None, fps: float | None = None,
-        trail_seconds: float = 3.0, dry_run: bool = False) -> bool:
+        trail_seconds: float | None = None, dry_run: bool = False) -> bool:
     motion = load_motion(video)
     if motion is None:
         return False
@@ -239,8 +246,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("clip", help="path to a .mkv clip (its .motion.json sidecar must exist)")
     parser.add_argument("-o", "--output", help="output path (default: <clip>.motion_debug.mp4)")
     parser.add_argument("--fps", type=float, help="output frame rate (default: capture.framerate)")
-    parser.add_argument("--trail-seconds", type=float, default=3.0,
-                        help="how long a track's trail stays visible before fading (default 3.0)")
+    parser.add_argument("--trail-seconds", type=float, default=None,
+                        help="how long a track's trail stays visible before fading "
+                             "(default: [postprocess] trail_seconds in config.toml)")
     parser.add_argument("-c", "--config", help="path to config.toml")
     parser.add_argument("--dry-run", action="store_true", help="print the ffmpeg commands, do not run")
     parser.add_argument("-v", "--verbose", action="store_true")

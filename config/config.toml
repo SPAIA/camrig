@@ -113,6 +113,13 @@ motion_width = 728
 motion_threshold = 6
 # Unix niceness for postprocess jobs, so an in-progress capture always wins the CPU.
 nice = 10
+# Insect-vs-plant track filters (straightness = net displacement / path length,
+# chronic = how persistently active a blob's cells stayed), tuned via the
+# camrig.motion_view sliders and used by camrig.motion_debug's trail filter.
+min_straightness = 0.210
+max_chronic = 0.450
+# How long a track's trail stays visible before fading (seconds).
+trail_seconds = 4.000
 
 [schedule]
 # Active recording window (local time). Outside it the Pi shuts down.
@@ -175,6 +182,13 @@ flashes = 3
 # Flash timing, milliseconds on and off.
 on_ms = 150
 off_ms = 150
+# Pulse the LED briefly on a steady cadence for as long as the supervisor
+# is alive -- lets you tell "board has power" apart from "camrig is
+# actually running" at a glance, without needing to SSH in. A rig that's
+# powered but crashed/hung shows a dark or static LED instead.
+heartbeat = true
+heartbeat_interval_seconds = 2.0
+heartbeat_pulse_ms = 100
 
 [startup]
 # Record one extra clip shortly after the supervisor starts, in addition to
