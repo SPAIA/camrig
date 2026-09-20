@@ -12,7 +12,7 @@ import math
 import numpy as np
 import pytest
 
-from camrig.motion import _link_tracks, analyse
+from camrig.motion import SCHEMA, _link_tracks, analyse
 
 W, H = 96, 64
 BG = 20
@@ -43,7 +43,7 @@ def test_frame_alignment_and_metadata():
     # 13 frames at window=6 -> two full windows + a 1-frame trailing window.
     assert [w["f"] for w in result["windows"]] == [0, 6, 12]
     assert result["windows"][-1]["n_frames"] == 1
-    assert result["schema"] == 2
+    assert result["schema"] == SCHEMA
 
 
 def test_static_scene_has_no_blobs():

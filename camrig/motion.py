@@ -61,7 +61,7 @@ from typing import BinaryIO
 
 import numpy as np
 
-SCHEMA = 2
+SCHEMA = 3
 ANALYSIS = "blob-track-v1"
 
 # Active pixels a cell needs before it participates in blob labelling. Together
