@@ -52,6 +52,15 @@ fi
 echo "==> Granting $CAM_USER camera access (video, render groups)"
 usermod -aG video,render "$CAM_USER"
 
+echo "==> Adding $PREFIX/venv/bin to $CAM_USER's PATH"
+CAM_HOME="$(getent passwd "$CAM_USER" | cut -d: -f6)"
+CAM_BASHRC="$CAM_HOME/.bashrc"
+PATH_LINE="export PATH=\"$PREFIX/venv/bin:\$PATH\""
+if [[ -n "$CAM_HOME" ]] && ! grep -qxF "$PATH_LINE" "$CAM_BASHRC" 2>/dev/null; then
+  echo "$PATH_LINE" >> "$CAM_BASHRC"
+  chown "$CAM_USER:$CAM_USER" "$CAM_BASHRC"
+fi
+
 echo "==> Installing config to $ETC"
 mkdir -p "$ETC"
 if [[ ! -f "$ETC/config.toml" ]]; then
@@ -134,6 +143,9 @@ Done. Next steps:
   2. Fill $ETC/rclone.conf with your R2 credentials (root:$CAM_USER, chmod 0640).
   3. Paste the Worker device token into $ETC/device_token.
   4. Reboot so the EEPROM change, watchdog, and group membership take effect.
+
+$PREFIX/venv/bin was added to $CAM_USER's PATH (~/.bashrc) — open a new shell
+(or re-login) as $CAM_USER to run plain \`camrig ...\` instead of the full path.
 
 Verify with:
   /opt/camrig/venv/bin/camrig status

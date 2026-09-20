@@ -9,6 +9,7 @@ Subcommands:
   bucket-postprocess   Postprocess a clip that lives only in the R2 bucket.
   bucket-debug-motion  Render a debug preview for a clip that lives only in the R2 bucket.
   motion-view Serve an interactive motion-track viewer for a clip (reach it over Tailscale).
+  label-score Score current [postprocess] thresholds against a clip's labels.jsonl.
   upload      Flush pending clips to R2 now and prune (manual catch-up).
   focus       Serve a live focus-assist page (manual lens; reach it over Tailscale).
   captive-portal  AP + captive-portal focus fallback (no internet after boot).
@@ -185,6 +186,31 @@ def _cmd_motion_view(args, cfg) -> int:
     return motion_view.run(cfg, Path(args.clip), config_path, port=args.port)
 
 
+def _cmd_label_score(args, cfg) -> int:
+    from pathlib import Path
+    from . import scoring
+
+    result = scoring.score(cfg, Path(args.clip))
+    if result is None:
+        return 1
+
+    recall = result.recall
+    fpr = result.false_positive_rate
+    print(f"insects kept   : {result.insect_kept}/{result.insect_total}"
+          + (f"  ({recall:.0%} recall)" if recall is not None else ""))
+    print(f"other kept (FP): {result.other_kept}/{result.other_total}"
+          + (f"  ({fpr:.0%} false-positive rate)" if fpr is not None else ""))
+    if result.misses:
+        print(f"\ninsects filtered out ({len(result.misses)}):")
+        for m in result.misses:
+            print(f"  track={m['source_track']} t0={m['t0']}")
+    if result.false_positives:
+        print(f"\nother tracks still kept ({len(result.false_positives)}):")
+        for fp in result.false_positives:
+            print(f"  track={fp['source_track']} t0={fp['t0']}")
+    return 0
+
+
 def _cmd_upload(args, cfg) -> int:
     from . import upload
 
@@ -334,6 +360,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("clip", help="path to a .mkv clip (its sidecars must exist)")
     p.add_argument("--port", type=int, default=8090, help="HTTP port (default 8090)")
     p.set_defaults(func=_cmd_motion_view)
+
+    p = sub.add_parser("label-score",
+                       help="score current [postprocess] thresholds against a clip's labels.jsonl")
+    p.add_argument("clip", help="path to a .mkv clip (its .motion.json and .labels.jsonl must exist)")
+    p.set_defaults(func=_cmd_label_score)
 
     p = sub.add_parser("upload", help="upload pending clips to R2 now, then prune")
     p.add_argument("--dry-run", action="store_true", help="print the commands, do not run")

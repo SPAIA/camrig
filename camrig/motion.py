@@ -21,7 +21,15 @@ The analysis (``blob-track-v1``):
    Per-track ``straightness`` (net displacement / path length) and per-blob
    ``chronic`` (how persistently its cells were active over the whole clip)
    are the plant discriminators: insects travel through fresh cells, swaying
-   vegetation oscillates in place over the same cells for minutes.
+   vegetation oscillates in place over the same cells for minutes. Two more
+   per-track discriminators catch what those two miss: ``step_ratio``
+   (largest hop / median hop -- one implausible jump between otherwise-steady
+   steps) and ``footprint_ratio`` (bounding-box footprint swept by the whole
+   track / mean per-point box size -- a blob that just churns shape/size in
+   place without ever sweeping new territory). None of the four are applied
+   here; ``camrig.motion_debug``/``camrig.motion_view`` filter on them via
+   ``[postprocess]`` thresholds, tuned against ``camrig.labels`` ground truth
+   (``camrig.scoring``).
 
 Keep this contract stable while iterating on the analysis:
 
@@ -48,6 +56,7 @@ import json
 import math
 import sys
 from pathlib import Path
+from statistics import median
 from typing import BinaryIO
 
 import numpy as np
@@ -177,9 +186,38 @@ def _link_tracks(windows: list[dict], max_dist: float, min_track_len: int = 3,
             # straightness filter. Require a second linked hop to confirm it.
             continue
         points = [blob["c"] for _, blob in path]
-        path_len = sum(math.dist(points[i], points[i + 1])
-                       for i in range(len(points) - 1))
+        steps = [math.dist(points[i], points[i + 1]) for i in range(len(points) - 1)]
+        path_len = sum(steps)
         net = math.dist(points[0], points[-1])
+
+        # step_ratio: largest single hop vs. the track's own median hop. A real
+        # flight has roughly steady step sizes (ratio near 1); a mismatched
+        # link between two unrelated blobs shows up as one implausible jump
+        # among otherwise-small steps (see _link_tracks' accel cap above --
+        # this catches what slips past it, e.g. a fresh track's unconstrained
+        # first hop). Capped rather than left as inf so it stays valid JSON.
+        step_med = median(steps) if steps else 0.0
+        if step_med > 0:
+            step_ratio = round(max(steps) / step_med, 2)
+        else:
+            step_ratio = 999.0 if steps and max(steps) > 0 else 1.0
+
+        # footprint_ratio: the bounding box spanning every point's blob vs. the
+        # mean size of a single point's blob. Real insects sweep into cells
+        # their box never covered before, growing the footprint well past one
+        # blob's own size; a blob that just changes shape/size in place (e.g.
+        # foliage catching light differently) can still drag its *weighted*
+        # centroid around -- looking straight and fast by straightness/chronic
+        # alone -- without the box ever really leaving one spot.
+        bboxes = [b["bbox"] for _, b in path]
+        fx0 = min(b[0] for b in bboxes)
+        fy0 = min(b[1] for b in bboxes)
+        fx1 = max(b[0] + b[2] for b in bboxes)
+        fy1 = max(b[1] + b[3] for b in bboxes)
+        footprint_area = (fx1 - fx0) * (fy1 - fy0)
+        mean_bbox_area = sum(b[2] * b[3] for b in bboxes) / len(bboxes)
+        footprint_ratio = round(footprint_area / mean_bbox_area, 2) if mean_bbox_area > 0 else 1.0
+
         tracks.append({
             "w0": path[0][0],
             "n": len(path),
@@ -189,6 +227,8 @@ def _link_tracks(windows: list[dict], max_dist: float, min_track_len: int = 3,
             "straightness": round(net / path_len, 3) if path_len > 0 else 0.0,
             "mean_area": round(sum(b["area"] for _, b in path) / len(path), 1),
             "chronic": round(sum(b["chronic"] for _, b in path) / len(path), 3),
+            "step_ratio": step_ratio,
+            "footprint_ratio": footprint_ratio,
         })
     tracks.sort(key=lambda t: t["w0"])
     return tracks

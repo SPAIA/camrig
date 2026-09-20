@@ -116,8 +116,20 @@ nice = 10
 # Insect-vs-plant track filters (straightness = net displacement / path length,
 # chronic = how persistently active a blob's cells stayed), tuned via the
 # camrig.motion_view sliders and used by camrig.motion_debug's trail filter.
-min_straightness = 0.210
-max_chronic = 0.450
+min_straightness = 0.190
+max_chronic = 0.050
+# Two more discriminators, same tuning workflow (0.0/50.0 = off, the ends of
+# their motion_view sliders): footprint_ratio low = the blob's box churned
+# shape/size in place without sweeping new territory; step_ratio high = one
+# implausible jump among otherwise-steady steps.
+min_footprint_ratio = 0.000
+max_step_ratio = 50.000
+# Burst-event filter: drop tracks wholesale when >= burst_min_tracks of them
+# start within burst_window_seconds of each other (wind gusts etc.) --
+# individually indistinguishable from insects, but the pipeline only needs
+# insects/minute. burst_min_tracks = 0 disables it.
+burst_window_seconds = 1.000
+burst_min_tracks = 0
 # How long a track's trail stays visible before fading (seconds).
 trail_seconds = 4.000
 

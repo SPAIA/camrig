@@ -1,15 +1,18 @@
 """Interactive motion-track viewer, served on the Pi (like camrig.focus).
 
-An on-demand debug tool for tuning the insect-vs-plant discriminators
-(``straightness``/``chronic``, see ``camrig.motion``) against real footage
-without re-encoding anything: it serves the clip's existing ``.preview.mp4``
-and ``.motion.json`` as-is, and draws trails/blobs client-side on a `<canvas>`
+An on-demand debug tool for tuning the insect-vs-plant discriminators (see
+``camrig.motion``: ``straightness``/``chronic``/``footprint_ratio``/
+``step_ratio``, plus a burst-event filter) against real footage without
+re-encoding anything: it serves the clip's existing ``.preview.mp4`` and
+``.motion.json`` as-is, and draws trails/blobs client-side on a `<canvas>`
 layered over the `<video>`. Threshold sliders filter which tracks are drawn
 live, in the browser; changes are persisted into ``config.toml``
-(``[postprocess] min_straightness`` / ``max_chronic``) so they survive
-between sessions -- open a URL printed at start-up, over Tailscale. Trail
-length/thickness match ``[postprocess] trail_seconds`` and
-``camrig.motion_debug``'s rendered look, so this preview and the mp4 agree.
+(``[postprocess]``) so they survive between sessions -- open a URL printed at
+start-up, over Tailscale. A track caught by the burst filter is drawn muted
+rather than hidden, so a real insect swept up in a wind gust is still visible
+to rescue/relabel. Trail length/thickness match ``[postprocess]
+trail_seconds`` and ``camrig.motion_debug``'s rendered look, so this preview
+and the mp4 agree.
 
 Click a trail to label its track ground-truth (insect/other/unsure, or the
 ``i``/``o``/``u`` shortcuts) -- see ``camrig.labels`` for the sidecar this
@@ -63,12 +66,18 @@ def _local_urls(port: int) -> list[str]:
 
 
 def _page(clip_name: str, fps: float, min_straightness: float, max_chronic: float,
+          min_footprint_ratio: float, max_step_ratio: float,
+          burst_window_seconds: float, burst_min_tracks: int,
           trail_seconds: float) -> str:
     return _PAGE_TEMPLATE \
         .replace("__CLIP__", clip_name) \
         .replace("__FPS__", repr(fps)) \
         .replace("__MIN_STRAIGHTNESS__", repr(min_straightness)) \
         .replace("__MAX_CHRONIC__", repr(max_chronic)) \
+        .replace("__MIN_FOOTPRINT_RATIO__", repr(min_footprint_ratio)) \
+        .replace("__MAX_STEP_RATIO__", repr(max_step_ratio)) \
+        .replace("__BURST_WINDOW_SECONDS__", repr(burst_window_seconds)) \
+        .replace("__BURST_MIN_TRACKS__", repr(burst_min_tracks)) \
         .replace("__TRAIL_SECONDS__", repr(trail_seconds))
 
 
@@ -137,6 +146,22 @@ content="width=device-width,initial-scale=1">
     <input type="range" id="maxChronic" min="0" max="1" step="0.01">
     <span class="val" id="maxChronicVal"></span>
   </label>
+  <label>min footprint ratio
+    <input type="range" id="minFootprintRatio" min="0" max="30" step="0.5">
+    <span class="val" id="minFootprintRatioVal"></span>
+  </label>
+  <label>max step ratio
+    <input type="range" id="maxStepRatio" min="1" max="50" step="1">
+    <span class="val" id="maxStepRatioVal"></span>
+  </label>
+  <label>burst window (s)
+    <input type="range" id="burstWindowSeconds" min="0.2" max="5" step="0.1">
+    <span class="val" id="burstWindowSecondsVal"></span>
+  </label>
+  <label>burst min tracks
+    <input type="range" id="burstMinTracks" min="0" max="30" step="1">
+    <span class="val" id="burstMinTracksVal"></span>
+  </label>
   <span id="saveStatus"></span>
   <span id="trackCount" style="margin-left:auto;color:#8b93a1;font-size:12px"></span>
 </header>
@@ -150,6 +175,9 @@ content="width=device-width,initial-scale=1">
     <div class="modalStats">
       <div>straightness <b id="lblStraightness"></b></div>
       <div>chronic <b id="lblChronic"></b></div>
+      <div>footprint ratio <b id="lblFootprintRatio"></b></div>
+      <div>step ratio <b id="lblStepRatio"></b></div>
+      <div>burst <b id="lblBurst"></b></div>
       <div>duration <b id="lblDuration"></b></div>
     </div>
     <div class="modalButtons">
@@ -197,6 +225,11 @@ const FPS = __FPS__;
 const TRAIL_SECONDS = __TRAIL_SECONDS__;
 let minStraightness = __MIN_STRAIGHTNESS__;
 let maxChronic = __MAX_CHRONIC__;
+let minFootprintRatio = __MIN_FOOTPRINT_RATIO__;
+let maxStepRatio = __MAX_STEP_RATIO__;
+let burstWindowSeconds = __BURST_WINDOW_SECONDS__;
+let burstMinTracks = __BURST_MIN_TRACKS__;
+let burstIds = new Set();
 let showTrails = true;
 
 const video = document.getElementById('v');
@@ -218,8 +251,35 @@ fetch('/motion.json').then(r => r.json()).then(m => {
   canvas.height = m.height;
   m.windows.forEach((w, wi) => { for (let i = 0; i < w.n_frames; i++) frameWindows.push(wi); });
   document.getElementById('trackCount').textContent = m.tracks.length + ' tracks';
+  recomputeBurst();
   requestAnimationFrame(loop);
 });
+
+function passesThresholds(t) {
+  return t.straightness >= minStraightness && t.chronic <= maxChronic &&
+    t.footprint_ratio >= minFootprintRatio && t.step_ratio <= maxStepRatio;
+}
+
+// Burst membership is clip-global (every candidate track's start time vs.
+// every other's), so it's recomputed only when the motion.json loads or a
+// threshold changes -- not per drawn frame.
+function recomputeBurst() {
+  burstIds = new Set();
+  if (!motion || burstMinTracks <= 0) return;
+  const starts = [];
+  motion.tracks.forEach((t, ti) => {
+    if (!passesThresholds(t)) return;
+    starts.push([motion.windows[t.w0].f / FPS, ti]);
+  });
+  starts.sort((a, b) => a[0] - b[0]);
+  let lo = 0;
+  for (let hi = 0; hi < starts.length; hi++) {
+    while (starts[hi][0] - starts[lo][0] > burstWindowSeconds) lo++;
+    if (hi - lo + 1 >= burstMinTracks) {
+      for (let k = lo; k <= hi; k++) burstIds.add(starts[k][1]);
+    }
+  }
+}
 
 fetch('/labels').then(r => r.json()).then(rows => {
   rows.forEach(r => labeledTracks.set(r.source_track, r.label));
@@ -244,29 +304,34 @@ function draw(wIdx) {
   if (!showTrails) return;
   const trailWindows = Math.max(1, Math.round(TRAIL_SECONDS * FPS / windowFrames));
   motion.tracks.forEach((t, ti) => {
-    if (t.straightness < minStraightness || t.chronic > maxChronic) return;
+    if (!passesThresholds(t)) return;
     const relIdx = wIdx - t.w0;
     if (relIdx < 0 || relIdx > t.n - 1) return;
     const idxEnd = relIdx;
     const idxStart = Math.max(0, idxEnd - trailWindows + 1);
     const pts = t.path.slice(idxStart, idxEnd + 1);
     const label = labeledTracks.get(ti);
-    const color = LABEL_COLORS[label] || PALETTE[ti % PALETTE.length];
-    ctx.lineWidth = 2;
+    const isBurst = burstIds.has(ti);
+    // Burst-caught tracks aren't dropped -- just drawn muted/thin, so a real
+    // insect swept up in a wind gust is still visible to rescue/relabel.
+    const color = LABEL_COLORS[label] || (isBurst ? '#6b7280' : PALETTE[ti % PALETTE.length]);
+    const alphaScale = isBurst ? 0.5 : 1;
+    ctx.lineWidth = isBurst ? 1 : 2;
     for (let i = 1; i < pts.length; i++) {
       ctx.strokeStyle = color;
-      ctx.globalAlpha = i / (pts.length - 1);
+      ctx.globalAlpha = (i / (pts.length - 1)) * alphaScale;
       ctx.beginPath();
       ctx.moveTo(pts[i - 1][0], pts[i - 1][1]);
       ctx.lineTo(pts[i][0], pts[i][1]);
       ctx.stroke();
     }
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = alphaScale;
     const [cx, cy] = pts[pts.length - 1];
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+    ctx.arc(cx, cy, isBurst ? 2 : 3, 0, Math.PI * 2);
     ctx.fill();
+    ctx.globalAlpha = 1;
     if (labeledTracks.has(ti)) {
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 1.5;
@@ -409,6 +474,9 @@ const modal = document.getElementById('labelModal');
 const lblTrackId = document.getElementById('lblTrackId');
 const lblStraightness = document.getElementById('lblStraightness');
 const lblChronic = document.getElementById('lblChronic');
+const lblFootprintRatio = document.getElementById('lblFootprintRatio');
+const lblStepRatio = document.getElementById('lblStepRatio');
+const lblBurst = document.getElementById('lblBurst');
 const lblDuration = document.getElementById('lblDuration');
 let selected = null;  // {ti, track, pts} of the track pending a label
 
@@ -436,6 +504,9 @@ function openLabelModal(dt) {
   lblTrackId.textContent = dt.ti;
   lblStraightness.textContent = dt.track.straightness.toFixed(2);
   lblChronic.textContent = dt.track.chronic.toFixed(2);
+  lblFootprintRatio.textContent = dt.track.footprint_ratio.toFixed(2);
+  lblStepRatio.textContent = dt.track.step_ratio.toFixed(2);
+  lblBurst.textContent = burstIds.has(dt.ti) ? 'yes' : 'no';
   lblDuration.textContent = (dt.track.n * windowFrames / FPS).toFixed(2) + 's';
   modal.classList.remove('hidden');
 }
@@ -519,29 +590,60 @@ const minEl = document.getElementById('minStraightness');
 const maxEl = document.getElementById('maxChronic');
 const minVal = document.getElementById('minStraightnessVal');
 const maxVal = document.getElementById('maxChronicVal');
+const minFootprintEl = document.getElementById('minFootprintRatio');
+const maxStepEl = document.getElementById('maxStepRatio');
+const burstWindowEl = document.getElementById('burstWindowSeconds');
+const burstMinTracksEl = document.getElementById('burstMinTracks');
+const minFootprintVal = document.getElementById('minFootprintRatioVal');
+const maxStepVal = document.getElementById('maxStepRatioVal');
+const burstWindowVal = document.getElementById('burstWindowSecondsVal');
+const burstMinTracksVal = document.getElementById('burstMinTracksVal');
 const saveStatus = document.getElementById('saveStatus');
 minEl.value = minStraightness; maxEl.value = maxChronic;
+minFootprintEl.value = minFootprintRatio; maxStepEl.value = maxStepRatio;
+burstWindowEl.value = burstWindowSeconds; burstMinTracksEl.value = burstMinTracks;
 minVal.textContent = minStraightness.toFixed(2);
 maxVal.textContent = maxChronic.toFixed(2);
+minFootprintVal.textContent = minFootprintRatio.toFixed(1);
+maxStepVal.textContent = maxStepRatio.toFixed(0);
+burstWindowVal.textContent = burstWindowSeconds.toFixed(1);
+burstMinTracksVal.textContent = burstMinTracks.toFixed(0);
 
 let saveTimer = null;
 function onThresholdChange() {
   minStraightness = parseFloat(minEl.value);
   maxChronic = parseFloat(maxEl.value);
+  minFootprintRatio = parseFloat(minFootprintEl.value);
+  maxStepRatio = parseFloat(maxStepEl.value);
+  burstWindowSeconds = parseFloat(burstWindowEl.value);
+  burstMinTracks = parseInt(burstMinTracksEl.value, 10);
   minVal.textContent = minStraightness.toFixed(2);
   maxVal.textContent = maxChronic.toFixed(2);
+  minFootprintVal.textContent = minFootprintRatio.toFixed(1);
+  maxStepVal.textContent = maxStepRatio.toFixed(0);
+  burstWindowVal.textContent = burstWindowSeconds.toFixed(1);
+  burstMinTracksVal.textContent = burstMinTracks.toFixed(0);
+  recomputeBurst();
   saveStatus.textContent = 'saving...';
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveThresholds, 400);
 }
 minEl.addEventListener('input', onThresholdChange);
 maxEl.addEventListener('input', onThresholdChange);
+minFootprintEl.addEventListener('input', onThresholdChange);
+maxStepEl.addEventListener('input', onThresholdChange);
+burstWindowEl.addEventListener('input', onThresholdChange);
+burstMinTracksEl.addEventListener('input', onThresholdChange);
 
 function saveThresholds() {
   fetch('/thresholds', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({min_straightness: minStraightness, max_chronic: maxChronic}),
+    body: JSON.stringify({
+      min_straightness: minStraightness, max_chronic: maxChronic,
+      min_footprint_ratio: minFootprintRatio, max_step_ratio: maxStepRatio,
+      burst_window_seconds: burstWindowSeconds, burst_min_tracks: burstMinTracks,
+    }),
   }).then(r => r.json()).then(j => {
     saveStatus.textContent = j.ok ? 'saved' : ('save failed: ' + j.error);
   }).catch(() => { saveStatus.textContent = 'save failed'; });
@@ -589,6 +691,8 @@ class _Handler(BaseHTTPRequestHandler):
         body = _page(
             self.video.name, cfg.capture.framerate,
             cfg.postprocess.min_straightness, cfg.postprocess.max_chronic,
+            cfg.postprocess.min_footprint_ratio, cfg.postprocess.max_step_ratio,
+            cfg.postprocess.burst_window_seconds, cfg.postprocess.burst_min_tracks,
             cfg.postprocess.trail_seconds,
         ).encode("utf-8")
         self.send_response(200)
@@ -649,8 +753,16 @@ class _Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length) or b"{}")
             min_straightness = float(body["min_straightness"])
             max_chronic = float(body["max_chronic"])
+            min_footprint_ratio = float(body["min_footprint_ratio"])
+            max_step_ratio = float(body["max_step_ratio"])
+            burst_window_seconds = float(body["burst_window_seconds"])
+            burst_min_tracks = int(body["burst_min_tracks"])
             if not (0.0 <= min_straightness <= 1.0 and 0.0 <= max_chronic <= 1.0):
-                raise ValueError("thresholds must be within 0..1")
+                raise ValueError("straightness/chronic thresholds must be within 0..1")
+            if min_footprint_ratio < 0.0 or max_step_ratio < 0.0:
+                raise ValueError("footprint/step ratios must be >= 0")
+            if burst_window_seconds <= 0.0 or burst_min_tracks < 0:
+                raise ValueError("burst window must be > 0 and burst min tracks >= 0")
         except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             self._json_response(400, {"ok": False, "error": str(exc)})
             return
@@ -660,6 +772,14 @@ class _Handler(BaseHTTPRequestHandler):
                              "min_straightness", f"{min_straightness:.3f}")
             set_config_value(self.config_path, "postprocess",
                              "max_chronic", f"{max_chronic:.3f}")
+            set_config_value(self.config_path, "postprocess",
+                             "min_footprint_ratio", f"{min_footprint_ratio:.3f}")
+            set_config_value(self.config_path, "postprocess",
+                             "max_step_ratio", f"{max_step_ratio:.3f}")
+            set_config_value(self.config_path, "postprocess",
+                             "burst_window_seconds", f"{burst_window_seconds:.3f}")
+            set_config_value(self.config_path, "postprocess",
+                             "burst_min_tracks", str(burst_min_tracks))
         except OSError as exc:
             log.warning("Could not persist thresholds to %s: %s", self.config_path, exc)
             self._json_response(200, {"ok": False, "error": f"could not write config: {exc}"})
@@ -667,6 +787,10 @@ class _Handler(BaseHTTPRequestHandler):
 
         self.cfg.postprocess.min_straightness = min_straightness
         self.cfg.postprocess.max_chronic = max_chronic
+        self.cfg.postprocess.min_footprint_ratio = min_footprint_ratio
+        self.cfg.postprocess.max_step_ratio = max_step_ratio
+        self.cfg.postprocess.burst_window_seconds = burst_window_seconds
+        self.cfg.postprocess.burst_min_tracks = burst_min_tracks
         self._json_response(200, {"ok": True})
 
     def _save_label(self) -> None:

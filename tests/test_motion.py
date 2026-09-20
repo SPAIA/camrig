@@ -126,8 +126,9 @@ def test_distant_blobs_stay_separate_and_track_independently():
     assert multi, "expected windows with two separate blobs"
 
 
-def _blob(x: float, y: float) -> dict:
-    return {"c": [x, y], "area": 5, "chronic": 0.0}
+def _blob(x: float, y: float, bbox: list | None = None) -> dict:
+    return {"c": [x, y], "area": 5, "chronic": 0.0,
+            "bbox": bbox if bbox is not None else [x - 2, y - 2, 4, 4]}
 
 
 def test_velocity_threshold_rejects_teleport_to_unrelated_blob():
@@ -173,3 +174,52 @@ def test_slow_crawler_visible_via_background_subtraction():
     result = run(frames)
     populated = [w for w in result["windows"] if w["blobs"]]
     assert len(populated) >= 6, "slow mover should still produce blobs"
+
+
+def test_step_ratio_flags_single_outlier_hop():
+    # Five steady 5px hops, then one 200px jump (a mismatched-blob link that
+    # slips past the accel cap because it's the track's very first hop after
+    # re-opening, or simply within max_dist/max_accel of a fast-moving track).
+    windows = [
+        {"blobs": [_blob(0, 10)]},
+        {"blobs": [_blob(5, 10)]},
+        {"blobs": [_blob(10, 10)]},
+        {"blobs": [_blob(15, 10)]},
+        {"blobs": [_blob(20, 10)]},
+        {"blobs": [_blob(220, 10)]},
+    ]
+    tracks = _link_tracks(windows, max_dist=250.0, min_track_len=3, max_accel=250.0)
+    assert len(tracks) == 1
+    assert tracks[0]["step_ratio"] > 10, "one 200px jump among 5px hops should stand out"
+
+
+def test_step_ratio_near_one_for_steady_speed():
+    windows = [{"blobs": [_blob(i * 5, 10)]} for i in range(6)]
+    tracks = _link_tracks(windows, max_dist=80.0, min_track_len=3, max_accel=40.0)
+    assert len(tracks) == 1
+    assert tracks[0]["step_ratio"] == pytest.approx(1.0, abs=0.1)
+
+
+def test_footprint_ratio_low_for_blob_pinned_in_place():
+    # Centroid wanders (as if a plant's weighted centroid shifted while its
+    # shape churned) but every point's own bbox is the same fixed box -- the
+    # blob never actually swept into new territory.
+    fixed_bbox = [40, 40, 10, 10]
+    windows = [
+        {"blobs": [_blob(42, 42, fixed_bbox)]},
+        {"blobs": [_blob(48, 44, fixed_bbox)]},
+        {"blobs": [_blob(44, 48, fixed_bbox)]},
+        {"blobs": [_blob(46, 46, fixed_bbox)]},
+    ]
+    tracks = _link_tracks(windows, max_dist=80.0, min_track_len=3, max_accel=40.0)
+    assert len(tracks) == 1
+    assert tracks[0]["footprint_ratio"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_footprint_ratio_high_for_real_translation():
+    # A dot's box travels with it: the whole-track footprint is far bigger
+    # than any single point's own box.
+    windows = [{"blobs": [_blob(i * 20, 10)]} for i in range(6)]
+    tracks = _link_tracks(windows, max_dist=80.0, min_track_len=3, max_accel=40.0)
+    assert len(tracks) == 1
+    assert tracks[0]["footprint_ratio"] > 5

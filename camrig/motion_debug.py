@@ -9,8 +9,11 @@ Decodes the clip at the motion-analysis resolution, so blob/track coordinates
 from the sidecar need no rescaling. Each window's blobs are drawn as grey
 boxes; each multi-window track gets a coloured trail with a dot at its current
 position, fading out (--trail-seconds) rather than persisting for the clip.
-Tracks are filtered by the same ``[postprocess] min_straightness`` /
-``max_chronic`` thresholds used by ``camrig.motion_view``.
+Tracks are filtered by the same ``[postprocess]`` thresholds used by
+``camrig.motion_view`` (``min_straightness``/``max_chronic``/
+``min_footprint_ratio``/``max_step_ratio``, plus the burst-event filter);
+tracks caught by the burst filter are drawn muted rather than dropped, so a
+real insect swept up in a wind gust is still visible to rescue/relabel.
 
     camrig debug-motion clip.mkv
     python -m camrig.motion_debug clip.mkv -o clip.debug.mp4
@@ -42,10 +45,49 @@ _PALETTE = [
     (188, 71, 171), (193, 172, 0), (67, 112, 255), (36, 157, 158),
 ]
 _BLOB_COLOR = (170, 170, 170)
+# Muted, desaturated from the palette above -- a burst-caught track is still
+# drawn (not dropped), just visually flagged as "excluded, but check me".
+_BURST_COLOR = (110, 110, 140)
 
 
 def debug_path(video: Path) -> Path:
     return video.with_suffix(DEBUG_SUFFIX)
+
+
+def passes_thresholds(track: dict, pp) -> bool:
+    """Whether a track survives every non-burst [postprocess] discriminator."""
+    return (track["straightness"] >= pp.min_straightness
+            and track["chronic"] <= pp.max_chronic
+            and track["footprint_ratio"] >= pp.min_footprint_ratio
+            and track["step_ratio"] <= pp.max_step_ratio)
+
+
+def burst_track_ids(motion: dict, tracks: list[dict], ids: list[int], framerate: float,
+                    window_seconds: float, min_tracks: int) -> set[int]:
+    """Track indices (from ``ids``) whose start falls in a dense burst.
+
+    A burst is >= ``min_tracks`` of the given tracks starting within a
+    ``window_seconds``-wide span -- wind gusts etc. spawn many candidate
+    tracks at once, individually indistinguishable from insects by the other
+    discriminators, but the pipeline only needs insects/minute, so a dense
+    enough burst is dropped wholesale rather than judged track-by-track.
+    ``ids`` should already be narrowed to tracks that passed the other
+    filters, so an incidental scatter of real insects doesn't inflate counts
+    against tracks that would've been excluded anyway.
+    """
+    if min_tracks <= 0 or not ids:
+        return set()
+    windows = motion["windows"]
+    starts = sorted((windows[tracks[i]["w0"]]["f"] / framerate, i) for i in ids)
+    flagged: set[int] = set()
+    lo = 0
+    for hi in range(len(starts)):
+        while starts[hi][0] - starts[lo][0] > window_seconds:
+            lo += 1
+        if hi - lo + 1 >= min_tracks:
+            for k in range(lo, hi + 1):
+                flagged.add(starts[k][1])
+    return flagged
 
 
 def _draw_rect(frame: np.ndarray, x: int, y: int, w: int, h: int, color, thickness: int) -> None:
@@ -154,6 +196,14 @@ def render(
         print(describe_commands(commands))
         return True
 
+    # Burst membership is clip-global (not tied to the current window), so
+    # it's computed once here rather than inside _rebuild_trails.
+    candidate_ids = [ti for ti, t in enumerate(tracks) if passes_thresholds(t, cfg.postprocess)]
+    burst_ids = burst_track_ids(
+        motion, tracks, candidate_ids, cfg.capture.framerate,
+        cfg.postprocess.burst_window_seconds, cfg.postprocess.burst_min_tracks,
+    )
+
     frame_windows = _frame_windows(windows)
     frame_bytes = width * height * 3
     total_frames = motion.get("frame_count", len(frame_windows))
@@ -172,24 +222,24 @@ def render(
     def _rebuild_trails(w_idx: int) -> None:
         trail_canvas.fill(0)
         trail_mask.fill(False)
-        for ti, track in enumerate(tracks):
-            if track["straightness"] < cfg.postprocess.min_straightness:
-                continue
-            if track["chronic"] > cfg.postprocess.max_chronic:
-                continue
+        for ti in candidate_ids:
+            track = tracks[ti]
             w0 = track["w0"]
             if w_idx < w0:
                 continue
             idx_end = min(w_idx - w0, track["n"] - 1)
             idx_start = max(0, idx_end - trail_windows + 1)
             pts = track["path"][idx_start:idx_end + 1]
-            color = _PALETTE[ti % len(_PALETTE)]
+            is_burst = ti in burst_ids
+            color = _BURST_COLOR if is_burst else _PALETTE[ti % len(_PALETTE)]
+            thickness = 1 if is_burst else 2
             for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
-                _draw_line(trail_canvas, round(x0), round(y0), round(x1), round(y1), color, 2,
-                          mask=trail_mask)
+                _draw_line(trail_canvas, round(x0), round(y0), round(x1), round(y1), color,
+                          thickness, mask=trail_mask)
             if pts:
                 cx, cy = pts[-1]
-                _draw_circle(trail_canvas, round(cx), round(cy), 3, color, mask=trail_mask)
+                _draw_circle(trail_canvas, round(cx), round(cy), 2 if is_burst else 3, color,
+                            mask=trail_mask)
 
     frame_idx = 0
     prev_w_idx = -1

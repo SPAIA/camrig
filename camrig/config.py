@@ -99,6 +99,22 @@ class PostprocessConfig:
     # sessions. 0.0/1.0 = no filtering.
     min_straightness: float = 0.0
     max_chronic: float = 1.0
+    # Two more camrig.motion track discriminators, same off-until-tuned
+    # convention as above -- 0.0/50.0 sit at the ends of the motion_view
+    # sliders' ranges, same as min_straightness/max_chronic's 0.0/1.0:
+    # footprint_ratio low = the blob's box churned shape/size in place without
+    # sweeping new territory; step_ratio high = one implausible jump among
+    # otherwise-steady steps (a mismatched blob link).
+    min_footprint_ratio: float = 0.0
+    max_step_ratio: float = 50.0
+    # Burst-event filter: wind gusts etc. spawn many candidate tracks within a
+    # short span, individually indistinguishable from insects by the metrics
+    # above. Since the pipeline only needs insects/minute, a dense-enough
+    # burst (>= burst_min_tracks candidate tracks starting within
+    # burst_window_seconds of each other) is dropped wholesale rather than
+    # judged track-by-track. burst_min_tracks = 0 disables it.
+    burst_window_seconds: float = 1.0
+    burst_min_tracks: int = 0
     # How long a track's trail stays visible before fading, shared by
     # camrig.motion_debug (rendered mp4) and camrig.motion_view (live preview)
     # so the two always look alike.
