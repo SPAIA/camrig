@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "camrig_version": "0.1.0",
+  "clip": "clip_20260829_160001_522.mkv",
+  "trigger": "scheduled",
+  "session_id": null,
+  "started_at_utc": "2026-08-29T14:00:01.522082+00:00",
+  "capture": {
+    "camera": "rpicam",
+    "profile": "mjpeg",
+    "width": 1456,
+    "height": 1088,
+    "framerate": 60,
+    "quality": 95,
+    "shutter_us": 2000,
+    "gain": 2.851018,
+    "auto_lock": true,
+    "auto_lock_warmup_ms": 1000,
+    "denoise": "cdn_off",
+    "clip_seconds": 300,
+    "max_session_seconds": 600,
+    "camera_busy_retry_seconds": 10,
+    "camera_busy_max_wait_seconds": 660
+  },
+  "camera": "rpicam",
+  "sensor": "imx296"
+}
