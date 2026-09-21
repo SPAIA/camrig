@@ -94,6 +94,7 @@ def build_commands(cfg: Config, video: Path) -> list[list[str]]:
         *nice, sys.executable, "-m", "camrig.motion",
         "--width", str(motion_w), "--height", str(motion_h),
         "--threshold", str(pp.motion_threshold),
+        "--framerate", str(cfg.capture.framerate),
         "--clip", video.name,
         "--output", str(motion_path(video)) + PART_SUFFIX,
     ]

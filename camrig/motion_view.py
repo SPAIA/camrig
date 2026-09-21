@@ -1,23 +1,31 @@
 """Interactive motion-track viewer, served on the Pi (like camrig.focus).
 
-An on-demand debug tool for tuning the insect-vs-plant discriminators (see
-``camrig.motion``: ``straightness``/``chronic``/``footprint_ratio``/
-``step_ratio``, plus a burst-event filter) against real footage without
-re-encoding anything: it serves the clip's existing ``.preview.mp4`` and
-``.motion.json`` as-is, and draws trails/blobs client-side on a `<canvas>`
-layered over the `<video>`. Threshold sliders filter which tracks are drawn
-live, in the browser; changes are persisted into ``config.toml``
-(``[postprocess]``) so they survive between sessions -- open a URL printed at
-start-up, over Tailscale. A track caught by the burst filter is drawn muted
-rather than hidden, so a real insect swept up in a wind gust is still visible
-to rescue/relabel. Trail length/thickness match ``[postprocess]
-trail_seconds`` and ``camrig.motion_debug``'s rendered look, so this preview
-and the mp4 agree.
-
+Primarily an annotation/QA tool now: it serves the clip's existing
+``.preview.mp4`` and ``.motion.json`` as-is, drawing trails/blobs client-side
+on a `<canvas>` layered over the `<video>`, with the current production
+filter result (``[postprocess]`` in ``config.toml``) shown by default.
 Click a trail to label its track ground-truth (insect/other/unsure, or the
 ``i``/``o``/``u`` shortcuts) -- see ``camrig.labels`` for the sidecar this
-writes. Labelling against real footage gives an objective way to check
-whether a threshold change actually helps, instead of eyeballing it.
+writes. Those labels are what ``camrig.optimise_filters`` searches against;
+this UI no longer tries to be the tuning workflow itself.
+
+The six insect-vs-plant discriminator thresholds (see ``camrig.motion``:
+``straightness``/``chronic``/``footprint_ratio``/``step_ratio``, plus a
+burst-event filter) are still here, in a collapsed "Advanced / debug
+filters" section, for inspecting *why* a track was kept or dropped -- not
+for hand-tuning production values by eye. Changing them live-persists into
+``config.toml`` the same as before, so a debug session doesn't leave the
+viewer out of sync with the sliders, but the intended way to change
+production thresholds is:
+
+    camrig optimise-filters .
+
+which searches all six jointly against every labelled clip's ground truth --
+see its module docstring. A track caught by the burst filter is drawn muted
+rather than hidden, so a real insect swept up in a wind gust is still
+visible to rescue/relabel. Trail length/thickness match ``[postprocess]
+trail_seconds`` and ``camrig.motion_debug``'s rendered look, so this preview
+and the mp4 agree.
 
     camrig motion-view clip.mkv
 
@@ -96,6 +104,10 @@ content="width=device-width,initial-scale=1">
   input[type=range]{width:130px}
   .val{font-variant-numeric:tabular-nums;min-width:3ch;display:inline-block}
   #saveStatus{font-size:11px;color:#8b93a1;min-width:6ch}
+  details.advanced{width:100%;order:99;border-top:1px solid #222;margin-top:.3rem;padding-top:.4rem}
+  details.advanced summary{cursor:pointer;font-size:12px;color:#8b93a1;user-select:none}
+  details.advanced .advancedNote{font-size:11px;color:#8b93a1;margin:.4rem 0 .5rem}
+  details.advanced .sliders{display:flex;gap:1.2rem;flex-wrap:wrap;align-items:center}
   .wrap{position:relative;max-width:1100px;margin:0 auto;background:#000}
   video{display:block;width:100%}
   canvas#overlay{position:absolute;inset:0;width:100%;height:100%;cursor:pointer}
@@ -139,32 +151,40 @@ content="width=device-width,initial-scale=1">
   <h1>camrig motion-view</h1>
   <label><input type="checkbox" id="trails" checked> trails<kbd>t</kbd></label>
   <label><input type="checkbox" id="showAll"> show all (no filter)<kbd>a</kbd></label>
-  <label>min straightness
-    <input type="range" id="minStraightness" min="0" max="1" step="0.01">
-    <span class="val" id="minStraightnessVal"></span>
-  </label>
-  <label>max chronic
-    <input type="range" id="maxChronic" min="0" max="1" step="0.01">
-    <span class="val" id="maxChronicVal"></span>
-  </label>
-  <label>min footprint ratio
-    <input type="range" id="minFootprintRatio" min="0" max="30" step="0.5">
-    <span class="val" id="minFootprintRatioVal"></span>
-  </label>
-  <label>max step ratio
-    <input type="range" id="maxStepRatio" min="1" max="50" step="1">
-    <span class="val" id="maxStepRatioVal"></span>
-  </label>
-  <label>burst window (s)
-    <input type="range" id="burstWindowSeconds" min="0.2" max="5" step="0.1">
-    <span class="val" id="burstWindowSecondsVal"></span>
-  </label>
-  <label>burst min tracks
-    <input type="range" id="burstMinTracks" min="0" max="30" step="1">
-    <span class="val" id="burstMinTracksVal"></span>
-  </label>
-  <span id="saveStatus"></span>
   <span id="trackCount" style="margin-left:auto;color:#8b93a1;font-size:12px"></span>
+  <details class="advanced">
+    <summary>Advanced / debug filters</summary>
+    <p class="advancedNote">For inspecting why a track was kept or dropped, not for tuning
+      production values by eye -- run <code>camrig optimise-filters</code> for that. Changes
+      here still save to config.toml.</p>
+    <div class="sliders">
+      <label>min straightness
+        <input type="range" id="minStraightness" min="0" max="1" step="0.01">
+        <span class="val" id="minStraightnessVal"></span>
+      </label>
+      <label>max chronic
+        <input type="range" id="maxChronic" min="0" max="1" step="0.01">
+        <span class="val" id="maxChronicVal"></span>
+      </label>
+      <label>min footprint ratio
+        <input type="range" id="minFootprintRatio" min="0" max="30" step="0.5">
+        <span class="val" id="minFootprintRatioVal"></span>
+      </label>
+      <label>max step ratio
+        <input type="range" id="maxStepRatio" min="1" max="50" step="1">
+        <span class="val" id="maxStepRatioVal"></span>
+      </label>
+      <label>burst window (s)
+        <input type="range" id="burstWindowSeconds" min="0.2" max="5" step="0.1">
+        <span class="val" id="burstWindowSecondsVal"></span>
+      </label>
+      <label>burst min tracks
+        <input type="range" id="burstMinTracks" min="0" max="30" step="1">
+        <span class="val" id="burstMinTracksVal"></span>
+      </label>
+      <span id="saveStatus"></span>
+    </div>
+  </details>
 </header>
 <div class="wrap">
   <video id="v" src="/clip.mp4" preload="auto"></video>
@@ -678,6 +698,7 @@ class _Handler(BaseHTTPRequestHandler):
     video: Path
     cfg: Config
     config_path: Path
+    framerate: float
 
     def log_message(self, *args) -> None:  # quiet; the app logs what it needs
         pass
@@ -709,7 +730,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _serve_page(self) -> None:
         cfg = self.cfg
         body = _page(
-            self.video.name, cfg.capture.framerate,
+            self.video.name, self.framerate,
             cfg.postprocess.min_straightness, cfg.postprocess.max_chronic,
             cfg.postprocess.min_footprint_ratio, cfg.postprocess.max_step_ratio,
             cfg.postprocess.burst_window_seconds, cfg.postprocess.burst_min_tracks,
@@ -888,7 +909,8 @@ class _Handler(BaseHTTPRequestHandler):
 
 def run(cfg: Config, video: Path, config_path: Path, *, port: int = 8090) -> int:
     """Serve the motion-track viewer for one clip until Ctrl-C."""
-    if load_motion(video) is None:
+    motion = load_motion(video)
+    if motion is None:
         return 1
     if not preview_path(video).exists():
         log.error("Missing %s; run `camrig postprocess %s` first", preview_path(video), video)
@@ -897,6 +919,11 @@ def run(cfg: Config, video: Path, config_path: Path, *, port: int = 8090) -> int
     server = ThreadingHTTPServer(("0.0.0.0", port), _Handler)
     server.daemon_threads = True
     _Handler.video = video
+    # This clip's OWN captured framerate (camrig.motion --framerate), not
+    # necessarily whatever [capture] currently says -- see camrig.motion's
+    # module docstring. Falls back to cfg.capture.framerate for a sidecar
+    # written before that field existed.
+    _Handler.framerate = motion.get("framerate", cfg.capture.framerate)
     _Handler.cfg = cfg
     _Handler.config_path = config_path
 

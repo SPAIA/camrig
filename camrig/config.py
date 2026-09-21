@@ -115,6 +115,19 @@ class PostprocessConfig:
     # judged track-by-track. burst_min_tracks = 0 disables it.
     burst_window_seconds: float = 1.0
     burst_min_tracks: int = 0
+    # Track-fragment stitching (camrig.stitch): camrig.motion._link_tracks
+    # sometimes loses a track for a window or two -- a brief occlusion, a dip
+    # below min_area, a frame or two folded into a neighbouring blob -- and
+    # starts a fresh track rather than truly losing the animal. Checking
+    # labelled insects against their own motion.json found a plausible
+    # successor track for over half of them, a third of which was ALSO
+    # independently labelled "insect" -- the same physical insect labelled
+    # twice. A track ending within stitch_max_gap_seconds and
+    # stitch_max_gap_distance (fraction of frame width) of another track's
+    # start is treated as one continuous trajectory for filtering and
+    # scoring. 0.0 = off, same convention as burst_min_tracks above.
+    stitch_max_gap_seconds: float = 0.0
+    stitch_max_gap_distance: float = 0.0
     # How long a track's trail stays visible before fading, shared by
     # camrig.motion_debug (rendered mp4) and camrig.motion_view (live preview)
     # so the two always look alike.

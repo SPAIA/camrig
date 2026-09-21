@@ -7,12 +7,13 @@ activity), split body parts merging into one blob, and noise rejection.
 """
 
 import io
+import json
 import math
 
 import numpy as np
 import pytest
 
-from camrig.motion import SCHEMA, _link_tracks, analyse
+from camrig.motion import SCHEMA, _link_tracks, analyse, main
 
 W, H = 96, 64
 BG = 20
@@ -223,3 +224,24 @@ def test_footprint_ratio_high_for_real_translation():
     tracks = _link_tracks(windows, max_dist=80.0, min_track_len=3, max_accel=40.0)
     assert len(tracks) == 1
     assert tracks[0]["footprint_ratio"] > 5
+
+
+def test_main_embeds_the_clips_own_framerate_in_the_sidecar(tmp_path, monkeypatch):
+    # --framerate is pure metadata for consumers (camrig.scoring,
+    # camrig.stitch, ...) -- it doesn't change the analysis itself, just
+    # what gets written alongside it, so different clips' sidecars can each
+    # carry their own true capture rate instead of consumers assuming one
+    # global config.toml value applies to every clip.
+    frames = [blank() for _ in range(6)]
+    stream = io.BytesIO(b"".join(f.astype(np.uint8).tobytes() for f in frames))
+    monkeypatch.setattr("sys.stdin", type("FakeStdin", (), {"buffer": stream})())
+    output = tmp_path / "clip.motion.json"
+
+    rc = main(["--width", str(W), "--height", str(H), "--framerate", "120",
+              "--clip", "clip.mkv", "-o", str(output)])
+
+    assert rc == 0
+    data = json.loads(output.read_text(encoding="utf-8"))
+    assert data["framerate"] == 120.0
+    assert data["schema"] == SCHEMA
+    assert data["clip"] == "clip.mkv"

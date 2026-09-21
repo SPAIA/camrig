@@ -10,6 +10,7 @@ Subcommands:
   bucket-debug-motion  Render a debug preview for a clip that lives only in the R2 bucket.
   motion-view Serve an interactive motion-track viewer for a clip (reach it over Tailscale).
   label-score Score current [postprocess] thresholds against a clip's labels.jsonl.
+  optimise-filters  Search [postprocess] filter thresholds against labelled clips.
   upload      Flush pending clips to R2 now and prune (manual catch-up).
   focus       Serve a live focus-assist page (manual lens; reach it over Tailscale).
   captive-portal  AP + captive-portal focus fallback (no internet after boot).
@@ -195,11 +196,14 @@ def _cmd_label_score(args, cfg) -> int:
         return 1
 
     recall = result.recall
-    fpr = result.false_positive_rate
-    print(f"insects kept   : {result.insect_kept}/{result.insect_total}"
+    # non_insect_surviving reported as "false positives" here under the
+    # assumption that an unlabelled survivor is not an insect -- see
+    # camrig.scoring.ScoreResult.non_insect_surviving for the hedged version.
+    print(f"insects kept  : {result.insect_kept}/{result.insect_total}"
           + (f"  ({recall:.0%} recall)" if recall is not None else ""))
-    print(f"other kept (FP): {result.other_kept}/{result.other_total}"
-          + (f"  ({fpr:.0%} false-positive rate)" if fpr is not None else ""))
+    print(f"false positives: {result.non_insect_surviving}")
+    print(f"surviving     : {result.surviving_total}"
+          + (f"  ({result.surviving_per_minute:.1f}/min)" if result.surviving_per_minute is not None else ""))
     if result.misses:
         print(f"\ninsects filtered out ({len(result.misses)}):")
         for m in result.misses:
@@ -208,6 +212,23 @@ def _cmd_label_score(args, cfg) -> int:
         print(f"\nother tracks still kept ({len(result.false_positives)}):")
         for fp in result.false_positives:
             print(f"  track={fp['source_track']} t0={fp['t0']}")
+    return 0
+
+
+def _cmd_optimise_filters(args, cfg) -> int:
+    from pathlib import Path
+    from . import optimise_filters
+
+    outcome = optimise_filters.run(
+        cfg, Path(args.dataset_dir), trials=args.trials, seed=args.seed, min_recall=args.min_recall,
+    )
+    if outcome is None:
+        return 1
+    print(optimise_filters.format_report(outcome))
+    if args.apply:
+        config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
+        optimise_filters.apply_best(outcome, config_path)
+        print(f"\nApplied best trial's thresholds to {config_path}")
     return 0
 
 
@@ -323,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
                        help="render motion tracks/blobs onto a clip for visual QA")
     p.add_argument("clip", help="path to a .mkv clip (its .motion.json sidecar must exist)")
     p.add_argument("-o", "--output", help="output path (default: <clip>.motion_debug.mp4)")
-    p.add_argument("--fps", type=float, help="output frame rate (default: capture.framerate)")
+    p.add_argument("--fps", type=float, help="output frame rate (default: the clip's own captured framerate, falling back to capture.framerate for older sidecars)")
     p.add_argument("--trail-seconds", type=float, default=None,
                    help="how long a track's trail stays visible before fading "
                         "(default: [postprocess] trail_seconds in config.toml)")
@@ -348,7 +369,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", help="rig hostname in the bucket (default: auto-detect if only one)")
     p.add_argument("--dest", help="local scratch dir to fetch into (default: a temp dir)")
     p.add_argument("-o", "--output", help="output path (default: <dest>/<clip>.motion_debug.mp4)")
-    p.add_argument("--fps", type=float, help="output frame rate (default: capture.framerate)")
+    p.add_argument("--fps", type=float, help="output frame rate (default: the clip's own captured framerate, falling back to capture.framerate for older sidecars)")
     p.add_argument("--trail-seconds", type=float, default=None,
                    help="how long a track's trail stays visible before fading "
                         "(default: [postprocess] trail_seconds in config.toml)")
@@ -365,6 +386,18 @@ def main(argv: list[str] | None = None) -> int:
                        help="score current [postprocess] thresholds against a clip's labels.jsonl")
     p.add_argument("clip", help="path to a .mkv clip (its .motion.json and .labels.jsonl must exist)")
     p.set_defaults(func=_cmd_label_score)
+
+    p = sub.add_parser("optimise-filters",
+                       help="search [postprocess] filter thresholds against labelled clips' motion.json")
+    p.add_argument("dataset_dir", nargs="?", default=".",
+                   help="directory to search for *.labels.jsonl + matching *.motion.json (default: .)")
+    p.add_argument("--trials", type=int, default=2000, help="number of search trials (default 2000)")
+    p.add_argument("--seed", type=int, default=42, help="RNG seed, for reproducibility (default 42)")
+    p.add_argument("--min-recall", type=float, default=0.95,
+                   help="minimum required labelled-insect recall (default 0.95)")
+    p.add_argument("--apply", action="store_true",
+                   help="write the best trial's thresholds into config.toml")
+    p.set_defaults(func=_cmd_optimise_filters)
 
     p = sub.add_parser("upload", help="upload pending clips to R2 now, then prune")
     p.add_argument("--dry-run", action="store_true", help="print the commands, do not run")

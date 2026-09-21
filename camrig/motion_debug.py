@@ -185,7 +185,12 @@ def render(
     """Draw motion.json's blobs/tracks onto video, writing an annotated preview."""
     width, height = motion["width"], motion["height"]
     windows, tracks = motion["windows"], motion["tracks"]
-    out_fps = fps or cfg.capture.framerate
+    # This clip's OWN captured framerate (camrig.motion --framerate), not
+    # necessarily whatever [capture] currently says -- see camrig.motion's
+    # module docstring. Falls back to cfg.capture.framerate for a sidecar
+    # written before that field existed.
+    framerate = motion.get("framerate", cfg.capture.framerate)
+    out_fps = fps or framerate
     trail_seconds = trail_seconds if trail_seconds is not None else cfg.postprocess.trail_seconds
     window_frames = motion.get("params", {}).get("window", 6)
     trail_windows = max(round(trail_seconds * out_fps / window_frames), 1)
@@ -200,7 +205,7 @@ def render(
     # it's computed once here rather than inside _rebuild_trails.
     candidate_ids = [ti for ti, t in enumerate(tracks) if passes_thresholds(t, cfg.postprocess)]
     burst_ids = burst_track_ids(
-        motion, tracks, candidate_ids, cfg.capture.framerate,
+        motion, tracks, candidate_ids, framerate,
         cfg.postprocess.burst_window_seconds, cfg.postprocess.burst_min_tracks,
     )
 
@@ -295,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("clip", help="path to a .mkv clip (its .motion.json sidecar must exist)")
     parser.add_argument("-o", "--output", help="output path (default: <clip>.motion_debug.mp4)")
-    parser.add_argument("--fps", type=float, help="output frame rate (default: capture.framerate)")
+    parser.add_argument("--fps", type=float, help="output frame rate (default: the clip's own captured framerate, falling back to capture.framerate for older sidecars)")
     parser.add_argument("--trail-seconds", type=float, default=None,
                         help="how long a track's trail stays visible before fading "
                              "(default: [postprocess] trail_seconds in config.toml)")

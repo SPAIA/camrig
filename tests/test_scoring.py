@@ -85,3 +85,51 @@ def test_score_ignores_unsure_labels(tmp_path):
     result = scoring.score(_cfg(), video)
     assert result.insect_total == 0
     assert result.other_total == 0
+
+
+# w0=0 (n=3) ends at window index 2 (t=0.2s); w0=3 starts at t=0.3s -- a 0.1s
+# gap, well within a stitch_max_gap_seconds=0.5 threshold. Paths continue in
+# a straight line across the fragment boundary so the merged track still
+# passes _cfg()'s min_straightness/max_step_ratio thresholds.
+_FRAGMENT_1 = {"w0": 0, "n": 3, "path": [[0, 0], [5, 0], [10, 0]],
+              "straightness": 0.9, "chronic": 0.01, "footprint_ratio": 10.0,
+              "step_ratio": 1.0, "mean_area": 8.0}
+_FRAGMENT_2 = {"w0": 3, "n": 3, "path": [[11, 0], [15, 0], [20, 0]],
+              "straightness": 0.9, "chronic": 0.01, "footprint_ratio": 10.0,
+              "step_ratio": 1.0, "mean_area": 8.0}
+
+
+def test_score_dedupes_stitched_fragments_labelled_insect_twice(tmp_path):
+    video = tmp_path / "clip.mkv"
+    _write_motion(video, [_FRAGMENT_1, _FRAGMENT_2])
+    append_label(video, {"label": "insect", "source_track": 0, "source_analysis": "x",
+                         "t0": 0.0, "t1": 0.1, "path": []})
+    append_label(video, {"label": "insect", "source_track": 1, "source_analysis": "x",
+                         "t0": 0.0, "t1": 0.1, "path": []})
+
+    cfg = _cfg()
+    cfg.postprocess.stitch_max_gap_seconds = 0.5
+    cfg.postprocess.stitch_max_gap_distance = 0.5
+
+    result = scoring.score(cfg, video)
+    assert result.insect_total == 1, "two fragments of the same physical insect should count once"
+    assert result.insect_kept == 1
+
+
+def test_score_group_label_prefers_insect_over_other():
+    from camrig.scoring import _resolve_group_label
+    assert _resolve_group_label({"insect", "other"}) == "insect"
+    assert _resolve_group_label({"other", "unsure"}) == "other"
+    assert _resolve_group_label({"unsure"}) == "unsure"
+
+
+def test_score_stitching_off_by_default_keeps_fragments_separate(tmp_path):
+    video = tmp_path / "clip.mkv"
+    _write_motion(video, [_FRAGMENT_1, _FRAGMENT_2])
+    append_label(video, {"label": "insect", "source_track": 0, "source_analysis": "x",
+                         "t0": 0.0, "t1": 0.1, "path": []})
+    append_label(video, {"label": "insect", "source_track": 1, "source_analysis": "x",
+                         "t0": 0.0, "t1": 0.1, "path": []})
+
+    result = scoring.score(_cfg(), video)  # _cfg() leaves stitch_* at their 0.0 "off" default
+    assert result.insect_total == 2

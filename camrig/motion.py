@@ -38,12 +38,23 @@ Keep this contract stable while iterating on the analysis:
   clip's ``.pts`` sidecar; that is what aligns metrics to wall-clock time (and
   to the Cloudflare-stored bug counts). Windows record their ``frame_start``
   so blob times resolve the same way.
+* ``--framerate`` — the clip's own capture frame rate, stored verbatim as
+  ``"framerate"`` in the sidecar. Nothing in this module's own analysis
+  needs it (windows/tracks stay in frame-index space throughout), but every
+  *consumer* that converts a frame/window index to wall-clock time
+  (``camrig.scoring``, ``camrig.stitch``, ``camrig.motion_debug``,
+  ``camrig.motion_view``) needs the TRUE rate this clip was captured at, not
+  whatever ``config.toml`` currently says -- those can differ once clips
+  captured under different ``[capture]`` settings coexist. A sidecar written
+  before this field existed has no ``"framerate"`` key; consumers fall back
+  to ``cfg.capture.framerate`` for those.
 * ``--output`` — path of the JSON sidecar to write.
 
 Usable standalone for experimentation on any clip:
 
     ffmpeg -i clip.mkv -vf scale=728:544,format=gray -f rawvideo - |
-        python3 -m camrig.motion --width 728 --height 544 -o clip.motion.json
+        python3 -m camrig.motion --width 728 --height 544 --framerate 60 \
+            -o clip.motion.json
 
 After changing the analysis, regenerate existing sidecars with
 ``camrig postprocess --force``.
@@ -61,7 +72,7 @@ from typing import BinaryIO
 
 import numpy as np
 
-SCHEMA = 3
+SCHEMA = 4
 ANALYSIS = "blob-track-v1"
 
 # Active pixels a cell needs before it participates in blob labelling. Together
@@ -337,6 +348,11 @@ def main(argv: list[str] | None = None) -> int:
                              "on top of its own last hop distance; stops a slow/still "
                              "track from teleporting to an unrelated blob within "
                              "max-link-dist (default 40)")
+    parser.add_argument("--framerate", type=float, required=True,
+                        help="clip's own capture frame rate (frames/sec); stored in the "
+                             "sidecar so consumers convert frame/window indices to "
+                             "wall-clock time using this clip's true rate, not whatever "
+                             "config.toml currently says")
     parser.add_argument("--clip", help="source clip name to embed in the sidecar")
     parser.add_argument("-o", "--output", required=True, help="JSON sidecar path")
     args = parser.parse_args(argv)
@@ -346,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
                      bg_alpha=args.bg_alpha, min_area=args.min_area,
                      max_link_dist=args.max_link_dist, min_track_len=args.min_track_len,
                      max_accel=args.max_accel)
+    result["framerate"] = args.framerate
     if args.clip:
         result = {"clip": args.clip, **result}
     Path(args.output).write_text(json.dumps(result), encoding="utf-8")
