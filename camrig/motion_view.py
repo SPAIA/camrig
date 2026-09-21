@@ -138,6 +138,7 @@ content="width=device-width,initial-scale=1">
 <header>
   <h1>camrig motion-view</h1>
   <label><input type="checkbox" id="trails" checked> trails<kbd>t</kbd></label>
+  <label><input type="checkbox" id="showAll"> show all (no filter)<kbd>a</kbd></label>
   <label>min straightness
     <input type="range" id="minStraightness" min="0" max="1" step="0.01">
     <span class="val" id="minStraightnessVal"></span>
@@ -209,9 +210,10 @@ content="width=device-width,initial-scale=1">
 </div>
 <div class="hint">
   Left/Right arrow: step 1 frame. Shift+Left/Right: step 10. Space: play/pause.
-  T: toggle trails. Grey boxes are every raw per-window detection; coloured
-  trails are linked tracks passing the threshold sliders, fading out after a
-  few frames. Labelled tracks are coloured by label:
+  T: toggle trails. A: show all trails, ignoring the threshold sliders (burst
+  muting still applies). Grey boxes are every raw per-window detection;
+  coloured trails are linked tracks passing the threshold sliders, fading out
+  after a few frames. Labelled tracks are coloured by label:
   <span style="color:#0f9d58">insect</span>,
   <span style="color:#db4437">other</span>,
   <span style="color:#f4b400">unsure</span>.
@@ -231,6 +233,7 @@ let burstWindowSeconds = __BURST_WINDOW_SECONDS__;
 let burstMinTracks = __BURST_MIN_TRACKS__;
 let burstIds = new Set();
 let showTrails = true;
+let showAll = false;
 
 const video = document.getElementById('v');
 const canvas = document.getElementById('overlay');
@@ -256,6 +259,7 @@ fetch('/motion.json').then(r => r.json()).then(m => {
 });
 
 function passesThresholds(t) {
+  if (showAll) return true;
   return t.straightness >= minStraightness && t.chronic <= maxChronic &&
     t.footprint_ratio >= minFootprintRatio && t.step_ratio <= maxStepRatio;
 }
@@ -573,6 +577,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowRight') { if (onFormControl) return; step(e.shiftKey ? 10 : 1); e.preventDefault(); }
   else if (e.key === ' ') { if (onFormControl) return; video.paused ? video.play() : video.pause(); e.preventDefault(); }
   else if (e.key === 't' || e.key === 'T') { toggleTrails(); e.preventDefault(); }
+  else if (e.key === 'a' || e.key === 'A') { setShowAll(!showAll); e.preventDefault(); }
   else if (e.key === '[') { markCutIn(); e.preventDefault(); }
   else if (e.key === ']') { markCutOut(); e.preventDefault(); }
 });
@@ -608,6 +613,21 @@ minFootprintVal.textContent = minFootprintRatio.toFixed(1);
 maxStepVal.textContent = maxStepRatio.toFixed(0);
 burstWindowVal.textContent = burstWindowSeconds.toFixed(1);
 burstMinTracksVal.textContent = burstMinTracks.toFixed(0);
+
+// "show all" bypasses passesThresholds() entirely (see above), so every
+// linked track gets a trail regardless of the sliders -- burst muting still
+// applies on top, since that's a "flagged, not hidden" distinction, not a
+// filter. The sliders have no effect while this is on, so grey them out
+// rather than leave them looking live but inert.
+const showAllCheckbox = document.getElementById('showAll');
+const thresholdSliders = [minEl, maxEl, minFootprintEl, maxStepEl];
+function setShowAll(value) {
+  showAll = value;
+  showAllCheckbox.checked = showAll;
+  thresholdSliders.forEach(el => { el.disabled = showAll; });
+  recomputeBurst();
+}
+showAllCheckbox.addEventListener('change', (e) => setShowAll(e.target.checked));
 
 let saveTimer = null;
 function onThresholdChange() {
