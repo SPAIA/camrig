@@ -31,8 +31,15 @@ singleton chain) -- the same "0 = off" convention as the burst filter.
 
 Recomputing a merged track's features
 --------------------------------------
-``straightness``/``step_ratio``/duration are recomputed EXACTLY from the
-members' concatenated path points -- ``motion.json`` keeps those in full.
+``straightness``/``step_ratio`` are recomputed EXACTLY from the members'
+concatenated path points -- ``motion.json`` keeps those in full.
+``duration_seconds`` is exact too, but is NOT just the sum of each member's
+own alive time -- it spans from the first member's start to the last
+member's end, so it counts the gap(s) between fragments as well. That is
+deliberate: a real insect's true duration includes the time it was briefly
+untracked, and a duration-based filter is much weaker than it needs to be
+if stitched fragments only get credited for what each one individually
+covered.
 ``chronic``/``mean_area``/``footprint_ratio`` are NOT exactly recomputable:
 their original formulas need each point's own blob bounding box, which
 ``motion.json`` discards once it's folded into the track's finalized scalar
@@ -189,12 +196,30 @@ def find_groups(motion: dict, framerate: float, *,
     return _greedy_chains(n, candidates, max_gap_seconds=max_gap_seconds, max_gap_distance=max_gap_distance)
 
 
-def _merge_group(indices: list[int], tracks: list[dict]) -> dict:
+def _duration_seconds(first: dict, last: dict, windows: list[dict], window_frames: int,
+                      framerate: float) -> float:
+    """Wall-clock span from the start of ``first``'s first window to the end
+    of ``last``'s last window. For a singleton group (``first is last``)
+    this is just that one track's own alive time. For a merged group it
+    also counts any GAP between fragments -- the whole reason duration
+    becomes a much stronger discriminator post-stitching is that a real
+    insect's true duration includes the time it was briefly untracked, not
+    just the sum of what each fragment individually covered.
+    """
+    start = windows[first["w0"]]["f"] / framerate
+    end = (windows[last["w0"] + last["n"] - 1]["f"] + window_frames) / framerate
+    return round(end - start, 3)
+
+
+def _merge_group(indices: list[int], tracks: list[dict], windows: list[dict],
+                 window_frames: int, framerate: float) -> dict:
     """Build one merged track dict from raw track indices, oldest first."""
     members = [tracks[i] for i in indices]
+    duration_seconds = _duration_seconds(members[0], members[-1], windows, window_frames, framerate)
     if len(members) == 1:
         merged = dict(members[0])
         merged["members"] = tuple(indices)
+        merged["duration_seconds"] = duration_seconds
         return merged
 
     path: list[list[float]] = []
@@ -225,6 +250,7 @@ def _merge_group(indices: list[int], tracks: list[dict]) -> dict:
         "chronic": round(weighted("chronic"), 3),
         "step_ratio": step_ratio,
         "footprint_ratio": round(weighted("footprint_ratio"), 2),
+        "duration_seconds": duration_seconds,
         "members": tuple(indices),
     }
 
@@ -232,10 +258,12 @@ def _merge_group(indices: list[int], tracks: list[dict]) -> dict:
 def stitch_motion(motion: dict, framerate: float, *,
                   max_gap_seconds: float, max_gap_distance: float,
                   candidates: list[tuple[float, float, int, int]] | None = None) -> StitchResult:
-    """Merge ``motion["tracks"]`` into stitched tracks. With stitching
-    disabled (``max_gap_seconds <= 0`` or ``max_gap_distance <= 0``) this is
-    a no-op: one group per raw track, in the same order, each carrying its
-    own single-member ``"members"`` tuple -- existing filtering/scoring code
+    """Merge ``motion["tracks"]`` into stitched tracks, each carrying a
+    ``duration_seconds`` field (see ``_duration_seconds``) alongside the
+    usual scalar discriminators. With stitching disabled (``max_gap_seconds
+    <= 0`` or ``max_gap_distance <= 0``) this is a no-op on every OTHER
+    field: one group per raw track, in the same order, each carrying its own
+    single-member ``"members"`` tuple -- existing filtering/scoring code
     that reads the usual track fields behaves exactly as it did before
     stitching existed.
 
@@ -244,6 +272,8 @@ def stitch_motion(motion: dict, framerate: float, *,
     see ``find_groups``'s docstring for when that matters.
     """
     tracks = motion["tracks"]
+    windows = motion["windows"]
+    window_frames = motion.get("params", {}).get("window", 6)
     if candidates is not None:
         groups = find_groups_from_candidates(len(tracks), candidates,
                                              max_gap_seconds=max_gap_seconds,
@@ -254,7 +284,7 @@ def stitch_motion(motion: dict, framerate: float, *,
     merged_tracks: list[dict] = []
     member_to_group: dict[int, int] = {}
     for group_id, indices in enumerate(groups):
-        merged_tracks.append(_merge_group(indices, tracks))
+        merged_tracks.append(_merge_group(indices, tracks, windows, window_frames, framerate))
         for raw_i in indices:
             member_to_group[raw_i] = group_id
     return StitchResult(tracks=merged_tracks, member_to_group=member_to_group)

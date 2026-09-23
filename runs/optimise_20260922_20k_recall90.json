@@ -1,0 +1,97 @@
+{
+  "generated_at": "2026-09-22T08:25:34+00:00",
+  "trials": 20000,
+  "seed": 42,
+  "min_recall": 0.9,
+  "clips": [
+    "clip_20260829_160001_522.mkv",
+    "clip_20260915_153004_595.mkv"
+  ],
+  "baseline": {
+    "thresholds": {
+      "min_straightness": 0.0,
+      "max_chronic": 1.0,
+      "min_footprint_ratio": 0.0,
+      "max_step_ratio": 50.0,
+      "min_duration_seconds": 0.0,
+      "burst_window_seconds": 1.0,
+      "burst_min_tracks": 0,
+      "burst_max_direction_deviation": 3.141592653589793,
+      "stitch_max_gap_seconds": 0.0,
+      "stitch_max_gap_distance": 0.0
+    },
+    "score": {
+      "insect_total": 93,
+      "insect_kept": 92,
+      "recall": 0.989247311827957,
+      "other_total": 121,
+      "other_kept": 114,
+      "false_positive_rate": 0.9421487603305785,
+      "unsure_total": 34,
+      "surviving_total": 6659,
+      "non_insect_surviving": 6567,
+      "background_candidate_rate": 0.9861841117284877,
+      "duration_seconds": 424.18333333333334,
+      "surviving_per_minute": 941.9040509213783
+    }
+  },
+  "best": {
+    "trial_index": 17967,
+    "thresholds": {
+      "min_straightness": 0.0,
+      "max_chronic": 0.086,
+      "min_footprint_ratio": 0.0,
+      "max_step_ratio": 50.0,
+      "min_duration_seconds": 0.213,
+      "burst_window_seconds": 2.502,
+      "burst_min_tracks": 30,
+      "burst_max_direction_deviation": 2.717,
+      "stitch_max_gap_seconds": 1.5,
+      "stitch_max_gap_distance": 0.075
+    },
+    "score": {
+      "insect_total": 47,
+      "insect_kept": 43,
+      "recall": 0.9148936170212766,
+      "other_total": 100,
+      "other_kept": 31,
+      "false_positive_rate": 0.31,
+      "unsure_total": 21,
+      "surviving_total": 315,
+      "non_insect_surviving": 272,
+      "background_candidate_rate": 0.8634920634920635,
+      "duration_seconds": 424.18333333333334,
+      "surviving_per_minute": 44.556206042984556
+    },
+    "per_clip": {
+      "clip_20260829_160001_522.mkv": {
+        "insect_total": 25,
+        "insect_kept": 21,
+        "recall": 0.84,
+        "other_total": 19,
+        "other_kept": 11,
+        "false_positive_rate": 0.5789473684210527,
+        "unsure_total": 11,
+        "surviving_total": 196,
+        "non_insect_surviving": 175,
+        "background_candidate_rate": 0.8928571428571429,
+        "duration_seconds": 290.75,
+        "surviving_per_minute": 40.44711951848667
+      },
+      "clip_20260915_153004_595.mkv": {
+        "insect_total": 22,
+        "insect_kept": 22,
+        "recall": 1.0,
+        "other_total": 81,
+        "other_kept": 20,
+        "false_positive_rate": 0.24691358024691357,
+        "unsure_total": 10,
+        "surviving_total": 119,
+        "non_insect_surviving": 97,
+        "background_candidate_rate": 0.8151260504201681,
+        "duration_seconds": 133.43333333333334,
+        "surviving_per_minute": 53.50986759930053
+      }
+    }
+  }
+}

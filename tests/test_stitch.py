@@ -6,6 +6,8 @@ index step is 0.1s. A track's end time is windows[w0 + n - 1]['f'] / fps
 successor's start time minus that.
 """
 
+import pytest
+
 from camrig.stitch import find_groups, stitch_motion
 
 
@@ -133,6 +135,34 @@ def test_stitch_motion_weights_chronic_and_mean_area_by_point_count():
     # point-count-weighted mean: (0.10*3 + 0.50*1) / 4 = 0.2; (10*3 + 30*1) / 4 = 15
     assert merged["chronic"] == round(0.2, 3)
     assert merged["mean_area"] == round(15.0, 1)
+
+
+def test_duration_seconds_for_a_singleton_track_is_its_own_alive_time():
+    # w0=0, n=3 -> occupies windows 0,1,2. Duration spans from window 0's
+    # start to window 2's end (i.e. window 2's start plus one more window
+    # step): 3 windows * 0.1s/window = 0.3s.
+    a = _track(w0=0, n=3, path=[[0, 0], [10, 0], [20, 0]])
+    motion = _motion([a])
+
+    result = stitch_motion(motion, FPS, max_gap_seconds=0.0, max_gap_distance=0.0)
+    assert result.tracks[0]["duration_seconds"] == pytest.approx(0.3)
+
+
+def test_duration_seconds_for_a_merged_track_counts_the_gap_between_fragments():
+    # a: w0=0, n=3 -> own span [0.0s, 0.3s) (0.3s alive).
+    # b: w0=6, n=2 -> starts at t=0.6s (a 0.3s gap after a's own end), own
+    # span [0.6s, 0.8s) (0.2s alive).
+    # A duration computed as "sum of each fragment's own alive time" would
+    # give 0.3+0.2=0.5s -- WRONG, since it ignores the fact the animal was
+    # (probably) still around, untracked, during the 0.3s gap. The true
+    # span from a's start to b's end is 0.8s.
+    a = _track(w0=0, n=3, path=[[0, 0], [10, 0], [20, 0]])
+    b = _track(w0=6, n=2, path=[[21, 0], [30, 0]])
+    motion = _motion([a, b])
+
+    result = stitch_motion(motion, FPS, max_gap_seconds=1.0, max_gap_distance=0.05)
+    assert len(result.tracks) == 1
+    assert result.tracks[0]["duration_seconds"] == pytest.approx(0.8)
 
 
 def test_member_to_group_maps_every_raw_track():

@@ -9,6 +9,7 @@ defaults defined here, so a partial config file is always valid.
 from __future__ import annotations
 
 import json
+import math
 import os
 import tomllib
 from dataclasses import dataclass, field, fields, is_dataclass
@@ -107,6 +108,16 @@ class PostprocessConfig:
     # otherwise-steady steps (a mismatched blob link).
     min_footprint_ratio: float = 0.0
     max_step_ratio: float = 50.0
+    # How long (seconds) a track must have been alive -- see
+    # camrig.stitch.stitch_motion's duration_seconds, which spans gaps
+    # between stitched fragments, not just the sum of what each one
+    # individually covered. Checking labelled insects against the other four
+    # discriminators above found straightness/chronic/footprint_ratio/
+    # step_ratio still heavily overlapping between insects and everything
+    # else surviving; duration was consistently the sharpest remaining
+    # separator (median several seconds for insects vs under a second for
+    # non-insect survivors). 0.0 = off (every track has positive duration).
+    min_duration_seconds: float = 0.0
     # Burst-event filter: wind gusts etc. spawn many candidate tracks within a
     # short span, individually indistinguishable from insects by the metrics
     # above. Since the pipeline only needs insects/minute, a dense-enough
@@ -115,6 +126,17 @@ class PostprocessConfig:
     # judged track-by-track. burst_min_tracks = 0 disables it.
     burst_window_seconds: float = 1.0
     burst_min_tracks: int = 0
+    # Refines the burst filter above from "dense cluster" to "dense AND
+    # directionally coherent" (camrig.motion_debug.burst_track_ids): a wind
+    # gust pushes vegetation along a shared axis, but independent insects
+    # moving through the same span of time generally don't agree on a
+    # heading. A cluster's dominant heading is the circular mean of its
+    # members' net-displacement directions; a member is only dropped if its
+    # own heading is within this many radians of that mean -- so an
+    # outlier-direction track survives even inside an otherwise-dense
+    # burst. math.pi (the default) accepts every possible deviation, i.e.
+    # off, identical to burst filtering without direction.
+    burst_max_direction_deviation: float = math.pi
     # Track-fragment stitching (camrig.stitch): camrig.motion._link_tracks
     # sometimes loses a track for a window or two -- a brief occlusion, a dip
     # below min_area, a frame or two folded into a neighbouring blob -- and

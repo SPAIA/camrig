@@ -216,6 +216,7 @@ def _cmd_label_score(args, cfg) -> int:
 
 
 def _cmd_optimise_filters(args, cfg) -> int:
+    import json
     from pathlib import Path
     from . import optimise_filters
 
@@ -229,6 +230,12 @@ def _cmd_optimise_filters(args, cfg) -> int:
         config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
         optimise_filters.apply_best(outcome, config_path)
         print(f"\nApplied best trial's thresholds to {config_path}")
+    if args.save:
+        save_path = Path(args.save)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        save_path.write_text(json.dumps(optimise_filters.outcome_to_dict(outcome), indent=2),
+                             encoding="utf-8")
+        print(f"\nSaved run summary to {save_path}")
     return 0
 
 
@@ -397,6 +404,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="minimum required labelled-insect recall (default 0.95)")
     p.add_argument("--apply", action="store_true",
                    help="write the best trial's thresholds into config.toml")
+    p.add_argument("--save", metavar="PATH",
+                   help="write a JSON summary of this run (thresholds + score, baseline and "
+                        "best) to PATH, so runs can be compared later instead of living only "
+                        "in terminal scrollback")
     p.set_defaults(func=_cmd_optimise_filters)
 
     p = sub.add_parser("upload", help="upload pending clips to R2 now, then prune")

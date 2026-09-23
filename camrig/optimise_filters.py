@@ -30,8 +30,10 @@ from __future__ import annotations
 import bisect
 import json
 import logging
+import math
 import random
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import Config, set_config_value
@@ -300,6 +302,52 @@ def apply_best(outcome: SearchOutcome, config_path: Path) -> None:
         set_config_value(config_path, "postprocess", name, text)
 
 
+def _score_to_dict(r: ScoreResult) -> dict:
+    return {
+        "insect_total": r.insect_total,
+        "insect_kept": r.insect_kept,
+        "recall": r.recall,
+        "other_total": r.other_total,
+        "other_kept": r.other_kept,
+        "false_positive_rate": r.false_positive_rate,
+        "unsure_total": r.unsure_total,
+        "surviving_total": r.surviving_total,
+        "non_insect_surviving": r.non_insect_surviving,
+        "background_candidate_rate": r.background_candidate_rate,
+        "duration_seconds": r.duration_seconds,
+        "surviving_per_minute": r.surviving_per_minute,
+    }
+
+
+def outcome_to_dict(outcome: SearchOutcome) -> dict:
+    """JSON-serializable record of one ``search()`` run -- thresholds and
+    scores for both the baseline and the winner, plus the winner's per-clip
+    breakdown. Nothing about ``optimise-filters`` persists this on its own
+    (a run's report only ever went to stdout); the CLI's ``--save`` writes
+    this out so a run can be compared against a later one instead of living
+    only in scrollback.
+    """
+    baseline_th, baseline_score = outcome.baseline
+    best_th, best_score, best_index = outcome.best
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "trials": outcome.trials,
+        "seed": outcome.seed,
+        "min_recall": outcome.min_recall,
+        "clips": sorted(baseline_score.per_clip),
+        "baseline": {
+            "thresholds": baseline_th.as_dict(),
+            "score": _score_to_dict(baseline_score),
+        },
+        "best": {
+            "trial_index": best_index,
+            "thresholds": best_th.as_dict(),
+            "score": _score_to_dict(best_score),
+            "per_clip": {name: _score_to_dict(r) for name, r in best_score.per_clip.items()},
+        },
+    }
+
+
 def _fmt_pct(x: float | None) -> str:
     return f"{x:.1%}" if x is not None else "n/a"
 
@@ -310,14 +358,17 @@ def _fmt_rate(x: float | None) -> str:
 
 def _format_thresholds(t: FilterThresholds) -> list[str]:
     return [
-        f"  min_straightness:        {t.min_straightness:.3f}",
-        f"  max_chronic:             {t.max_chronic:.3f}",
-        f"  min_footprint_ratio:     {t.min_footprint_ratio:.2f}",
-        f"  max_step_ratio:          {t.max_step_ratio:.1f}",
-        f"  burst_window_seconds:    {t.burst_window_seconds:.2f}",
-        f"  burst_min_tracks:        {t.burst_min_tracks}",
-        f"  stitch_max_gap_seconds:  {t.stitch_max_gap_seconds:.2f}",
-        f"  stitch_max_gap_distance: {t.stitch_max_gap_distance:.3f}",
+        f"  min_straightness:              {t.min_straightness:.3f}",
+        f"  max_chronic:                   {t.max_chronic:.3f}",
+        f"  min_footprint_ratio:           {t.min_footprint_ratio:.2f}",
+        f"  max_step_ratio:                {t.max_step_ratio:.1f}",
+        f"  min_duration_seconds:          {t.min_duration_seconds:.2f}",
+        f"  burst_window_seconds:          {t.burst_window_seconds:.2f}",
+        f"  burst_min_tracks:              {t.burst_min_tracks}",
+        f"  burst_max_direction_deviation: {t.burst_max_direction_deviation:.3f} rad"
+        f" ({math.degrees(t.burst_max_direction_deviation):.0f}°)",
+        f"  stitch_max_gap_seconds:        {t.stitch_max_gap_seconds:.2f}",
+        f"  stitch_max_gap_distance:       {t.stitch_max_gap_distance:.3f}",
     ]
 
 

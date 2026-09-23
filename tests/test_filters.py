@@ -2,14 +2,18 @@
 camrig.scoring and camrig.optimise_filters.
 """
 
+import math
+
 from camrig.config import PostprocessConfig
 from camrig.filters import PARAM_BOUNDS, FilterThresholds
 
 
-def test_from_postprocess_copies_the_eight_filter_fields():
+def test_from_postprocess_copies_the_ten_filter_fields():
     pp = PostprocessConfig(
         min_straightness=0.4, max_chronic=0.2, min_footprint_ratio=3.0,
-        max_step_ratio=12.0, burst_window_seconds=0.8, burst_min_tracks=5,
+        max_step_ratio=12.0, min_duration_seconds=0.7,
+        burst_window_seconds=0.8, burst_min_tracks=5,
+        burst_max_direction_deviation=1.2,
         stitch_max_gap_seconds=0.6, stitch_max_gap_distance=0.03,
         # unrelated PostprocessConfig fields should have no bearing:
         motion_threshold=99, preview_width=1,
@@ -19,8 +23,10 @@ def test_from_postprocess_copies_the_eight_filter_fields():
     assert t.max_chronic == 0.2
     assert t.min_footprint_ratio == 3.0
     assert t.max_step_ratio == 12.0
+    assert t.min_duration_seconds == 0.7
     assert t.burst_window_seconds == 0.8
     assert t.burst_min_tracks == 5
+    assert t.burst_max_direction_deviation == 1.2
     assert t.stitch_max_gap_seconds == 0.6
     assert t.stitch_max_gap_distance == 0.03
 
@@ -36,6 +42,8 @@ def test_defaults_mean_no_filtering():
     t = FilterThresholds()
     assert t.min_straightness == 0.0 and t.max_chronic == 1.0
     assert t.min_footprint_ratio == 0.0
+    assert t.min_duration_seconds == 0.0  # every track has positive duration
     assert t.burst_min_tracks == 0  # disables the burst filter entirely
+    assert t.burst_max_direction_deviation == math.pi  # accepts every deviation
     assert t.stitch_max_gap_seconds == 0.0  # disables stitching entirely
     assert t.stitch_max_gap_distance == 0.0

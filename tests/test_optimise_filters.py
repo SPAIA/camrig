@@ -184,3 +184,26 @@ def test_format_report_includes_dataset_and_best_sections(tmp_path):
     assert "Baseline" in report
     assert "Best (trial" in report
     assert "clip.mkv:" in report
+
+
+def test_outcome_to_dict_is_json_serializable_and_round_trips_key_numbers(tmp_path):
+    video = tmp_path / "clip.mkv"
+    _write_clip(video, [_track(w0=0), _track(w0=10, straightness=0.1)],
+               [("insect", 0), ("other", 1)])
+    datasets = of.load_dataset([video], default_framerate=60.0)
+    baseline = FilterThresholds(min_straightness=0.3)
+    outcome = of.search(datasets, trials=5, seed=1, min_recall=0.95, baseline=baseline)
+
+    payload = of.outcome_to_dict(outcome)
+    text = json.dumps(payload)  # raises if anything isn't JSON-serializable
+    reloaded = json.loads(text)
+
+    assert reloaded["trials"] == 5
+    assert reloaded["seed"] == 1
+    assert reloaded["clips"] == ["clip.mkv"]
+    assert reloaded["baseline"]["thresholds"]["min_straightness"] == 0.3
+    best_thresholds, best_score, best_index = outcome.best
+    assert reloaded["best"]["trial_index"] == best_index
+    assert reloaded["best"]["score"]["insect_kept"] == best_score.insect_kept
+    assert reloaded["best"]["per_clip"]["clip.mkv"]["surviving_total"] == \
+        best_score.per_clip["clip.mkv"].surviving_total

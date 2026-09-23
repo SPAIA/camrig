@@ -8,7 +8,7 @@
 # over GigE — transport settings in [basler] below, wiring and network setup
 # in docs/basler-gige.md). width/height/framerate/quality/shutter_us/
 # clip_seconds apply to all backends.
-camera = "rpicam"
+camera = "rpicam-af"
 
 # Capture profile: "mjpeg" (default daily pipeline, intra-only, clean frames),
 # "ffv1" (lossless intra, large), or "raw" (unprocessed sensor frames, huge —
@@ -57,7 +57,7 @@ auto_lock_warmup_ms = 1000
 lens_position = 0.0
 
 # Max time (ms) to let autofocus converge during that warm-up capture.
-autofocus_warmup_ms = 2000
+autofocus_warmup_ms = 3000
 
 # ISP denoise mode (rpicam/rpicam-af only; the Basler mono path applies no denoise).
 # "cdn_off" disables temporal/3D denoise, which otherwise smears or erases
@@ -65,7 +65,7 @@ autofocus_warmup_ms = 2000
 denoise = "cdn_off"
 
 # Scheduled clip length in seconds (5 minutes).
-clip_seconds = 300
+clip_seconds = 120
 
 # Safety ceiling for human-triggered sessions; the supervisor force-stops after this.
 max_session_seconds = 600
@@ -116,20 +116,31 @@ nice = 10
 # Insect-vs-plant track filters (straightness = net displacement / path length,
 # chronic = how persistently active a blob's cells stayed), tuned via the
 # camrig.motion_view sliders and used by camrig.motion_debug's trail filter.
-min_straightness = 0.190
-max_chronic = 0.050
+min_straightness = 0.032
+max_chronic = 0.189
 # Two more discriminators, same tuning workflow (0.0/50.0 = off, the ends of
 # their motion_view sliders): footprint_ratio low = the blob's box churned
 # shape/size in place without sweeping new territory; step_ratio high = one
 # implausible jump among otherwise-steady steps.
 min_footprint_ratio = 0.000
 max_step_ratio = 50.000
+# How long (seconds) a track must have been alive (camrig.stitch's
+# duration_seconds, which spans gaps between stitched fragments). 0 = off.
+min_duration_seconds = 0.000
 # Burst-event filter: drop tracks wholesale when >= burst_min_tracks of them
 # start within burst_window_seconds of each other (wind gusts etc.) --
 # individually indistinguishable from insects, but the pipeline only needs
 # insects/minute. burst_min_tracks = 0 disables it.
-burst_window_seconds = 1.000
-burst_min_tracks = 0
+burst_window_seconds = 2.953
+burst_min_tracks = 22
+# Refines the burst filter to "dense AND directionally coherent" (radians;
+# pi = every deviation accepted, i.e. no directional refinement).
+burst_max_direction_deviation = 2.803
+# Track-fragment stitching (camrig.stitch): merge tracks ending within this
+# many seconds and this fraction of frame width of another track's start.
+# 0.0/0.0 disables stitching.
+stitch_max_gap_seconds = 1.500
+stitch_max_gap_distance = 0.076
 # How long a track's trail stays visible before fading (seconds).
 trail_seconds = 4.000
 

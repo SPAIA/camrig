@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -55,16 +56,63 @@ def debug_path(video: Path) -> Path:
 
 
 def passes_thresholds(track: dict, pp) -> bool:
-    """Whether a track survives every non-burst [postprocess] discriminator."""
+    """Whether a track survives every non-burst [postprocess] discriminator.
+
+    ``duration_seconds`` (see ``camrig.stitch``) is only present on a track
+    that went through ``camrig.stitch.stitch_motion`` first -- a raw
+    ``motion.json`` track never has it. A track missing it can't be judged
+    on duration, so it's treated as passing regardless of
+    ``pp.min_duration_seconds`` rather than raising: callers that don't
+    stitch first (currently ``camrig.motion_debug.render``) simply don't
+    get duration filtering, the same known gap as stitching/burst-direction
+    not yet being reflected in the rendered debug preview.
+    """
+    duration_seconds = track.get("duration_seconds")
     return (track["straightness"] >= pp.min_straightness
             and track["chronic"] <= pp.max_chronic
             and track["footprint_ratio"] >= pp.min_footprint_ratio
-            and track["step_ratio"] <= pp.max_step_ratio)
+            and track["step_ratio"] <= pp.max_step_ratio
+            and (duration_seconds is None or duration_seconds >= pp.min_duration_seconds))
+
+
+def _track_heading(track: dict) -> float | None:
+    """Direction of net displacement (radians), or None if the track has no
+    net displacement (start == end point) to take a bearing from.
+    """
+    (x0, y0), (x1, y1) = track["path"][0], track["path"][-1]
+    dx, dy = x1 - x0, y1 - y0
+    if dx == 0 and dy == 0:
+        return None
+    return math.atan2(dy, dx)
+
+
+def _angular_diff(a: float, b: float) -> float:
+    """Smallest angle between two headings (radians), always in [0, pi]."""
+    d = abs(a - b) % (2 * math.pi)
+    return min(d, 2 * math.pi - d)
+
+
+def _dominant_heading(ids: list[int], headings: dict[int, float | None]) -> float | None:
+    """Circular mean heading of ``ids`` (skipping those with no heading), or
+    None if none of them have one.
+    """
+    x = y = 0.0
+    n = 0
+    for ti in ids:
+        h = headings[ti]
+        if h is None:
+            continue
+        x += math.cos(h)
+        y += math.sin(h)
+        n += 1
+    return math.atan2(y, x) if n else None
 
 
 def burst_track_ids(motion: dict, tracks: list[dict], ids: list[int], framerate: float,
-                    window_seconds: float, min_tracks: int) -> set[int]:
-    """Track indices (from ``ids``) whose start falls in a dense burst.
+                    window_seconds: float, min_tracks: int, *,
+                    max_direction_deviation: float = math.pi) -> set[int]:
+    """Track indices (from ``ids``) whose start falls in a dense, directionally
+    coherent burst.
 
     A burst is >= ``min_tracks`` of the given tracks starting within a
     ``window_seconds``-wide span -- wind gusts etc. spawn many candidate
@@ -74,19 +122,36 @@ def burst_track_ids(motion: dict, tracks: list[dict], ids: list[int], framerate:
     ``ids`` should already be narrowed to tracks that passed the other
     filters, so an incidental scatter of real insects doesn't inflate counts
     against tracks that would've been excluded anyway.
+
+    A gust of wind pushes vegetation along a shared axis; independent
+    insects moving through the same span of time generally don't agree on a
+    heading. ``max_direction_deviation`` (radians) refines "dense cluster"
+    to "dense AND directionally coherent": within each qualifying cluster,
+    its dominant heading is the circular mean of its members' net-
+    displacement directions, and a member is only flagged if its own
+    heading is within ``max_direction_deviation`` of that mean. A track
+    with no net displacement (or a cluster with no heading at all) can't be
+    judged this way and is flagged as before. The default, pi, accepts
+    every possible deviation -- i.e. off, identical to the pre-directional
+    behaviour.
     """
     if min_tracks <= 0 or not ids:
         return set()
     windows = motion["windows"]
     starts = sorted((windows[tracks[i]["w0"]]["f"] / framerate, i) for i in ids)
+    headings = {i: _track_heading(tracks[i]) for i in ids}
     flagged: set[int] = set()
     lo = 0
     for hi in range(len(starts)):
         while starts[hi][0] - starts[lo][0] > window_seconds:
             lo += 1
         if hi - lo + 1 >= min_tracks:
-            for k in range(lo, hi + 1):
-                flagged.add(starts[k][1])
+            window_ids = [starts[k][1] for k in range(lo, hi + 1)]
+            dominant = _dominant_heading(window_ids, headings)
+            for ti in window_ids:
+                h = headings[ti]
+                if dominant is None or h is None or _angular_diff(h, dominant) <= max_direction_deviation:
+                    flagged.add(ti)
     return flagged
 
 
@@ -207,6 +272,7 @@ def render(
     burst_ids = burst_track_ids(
         motion, tracks, candidate_ids, framerate,
         cfg.postprocess.burst_window_seconds, cfg.postprocess.burst_min_tracks,
+        max_direction_deviation=cfg.postprocess.burst_max_direction_deviation,
     )
 
     frame_windows = _frame_windows(windows)

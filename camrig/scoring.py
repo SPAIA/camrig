@@ -35,7 +35,7 @@ from .config import Config
 from .filters import FilterThresholds
 from .labels import load_labels
 from .motion_debug import burst_track_ids, load_motion, passes_thresholds
-from .stitch import stitch_motion
+from .stitch import StitchResult, stitch_motion
 
 
 @dataclass
@@ -101,6 +101,63 @@ def _resolve_group_label(labels_in_group: set[str]) -> str:
     return "unsure"
 
 
+def _compute_survival(motion: dict, thresholds: FilterThresholds, framerate: float, *,
+                      stitch_candidates: list[tuple] | None = None,
+                      ) -> tuple[StitchResult, set[int], set[int]]:
+    """Shared by ``score_tracks`` and ``survivor_ids``: stitch, then apply
+    the scalar thresholds, then the burst filter. Returns ``(stitched,
+    candidate_group_ids, burst_excluded_group_ids)`` -- GROUP ids (indices
+    into ``stitched.tracks``), not raw track indices; ``candidate_group_ids
+    - burst_excluded_group_ids`` is the final surviving set.
+    """
+    stitched = stitch_motion(motion, framerate,
+                             max_gap_seconds=thresholds.stitch_max_gap_seconds,
+                             max_gap_distance=thresholds.stitch_max_gap_distance,
+                             candidates=stitch_candidates)
+    tracks = stitched.tracks
+    stitched_motion = {**motion, "tracks": tracks}
+
+    candidate_ids = [ti for ti, t in enumerate(tracks) if passes_thresholds(t, thresholds)]
+    candidate_id_set = set(candidate_ids)
+    burst_ids = burst_track_ids(
+        stitched_motion, tracks, candidate_ids, framerate,
+        thresholds.burst_window_seconds, thresholds.burst_min_tracks,
+        max_direction_deviation=thresholds.burst_max_direction_deviation,
+    )
+    return stitched, candidate_id_set, burst_ids
+
+
+def survivor_ids(motion: dict, thresholds: FilterThresholds, framerate: float) -> tuple[set[int], set[int]]:
+    """Every RAW ``motion["tracks"]`` index currently kept by the full
+    filter pipeline (stitching, then the scalar thresholds, then the
+    directional-burst filter) -- the same computation
+    ``camrig.optimise_filters``/``score_tracks`` use, but reported as raw
+    track indices (a fragment's own index, even if it only survives because
+    it got stitched into a longer group) instead of merged-group or
+    label-matched counts.
+
+    For ``camrig.motion_view``'s live viewer, so it highlights what the
+    real pipeline keeps instead of a simplified client-side reimplementation
+    of just the four original scalar thresholds (which has no notion of
+    stitching, duration, or directional burst exclusion).
+
+    Returns ``(passing, burst_excluded)``: ``passing`` is every raw track
+    whose group cleared the scalar thresholds (straightness/chronic/
+    footprint_ratio/step_ratio/duration) -- burst-excluded tracks are
+    still included here, matching ``camrig.motion_view``'s "drawn muted,
+    not hidden" convention for a burst-caught track someone might want to
+    rescue. ``burst_excluded`` is the subset of ``passing`` that the burst
+    filter then dropped. A raw track not in ``passing`` at all failed the
+    scalar thresholds outright.
+    """
+    stitched, candidate_group_ids, burst_group_ids = _compute_survival(motion, thresholds, framerate)
+    passing = {raw_ti for raw_ti, group_id in stitched.member_to_group.items()
+              if group_id in candidate_group_ids}
+    burst_excluded = {raw_ti for raw_ti, group_id in stitched.member_to_group.items()
+                      if group_id in burst_group_ids}
+    return passing, burst_excluded
+
+
 def score_tracks(motion: dict, labels: list[dict], thresholds: FilterThresholds,
                  framerate: float, *, detail: bool = True,
                  stitch_candidates: list[tuple] | None = None) -> ScoreResult:
@@ -125,19 +182,8 @@ def score_tracks(motion: dict, labels: list[dict], thresholds: FilterThresholds,
     ``camrig.optimise_filters.load_dataset``) to avoid recomputing
     track-pair candidates on every call in a search loop.
     """
-    stitched = stitch_motion(motion, framerate,
-                             max_gap_seconds=thresholds.stitch_max_gap_seconds,
-                             max_gap_distance=thresholds.stitch_max_gap_distance,
-                             candidates=stitch_candidates)
-    tracks = stitched.tracks
-    stitched_motion = {**motion, "tracks": tracks}
-
-    candidate_ids = [ti for ti, t in enumerate(tracks) if passes_thresholds(t, thresholds)]
-    candidate_id_set = set(candidate_ids)
-    burst_ids = burst_track_ids(
-        stitched_motion, tracks, candidate_ids, framerate,
-        thresholds.burst_window_seconds, thresholds.burst_min_tracks,
-    )
+    stitched, candidate_id_set, burst_ids = _compute_survival(
+        motion, thresholds, framerate, stitch_candidates=stitch_candidates)
     surviving_ids = candidate_id_set - burst_ids
 
     by_raw_track: dict[int, dict] = {}

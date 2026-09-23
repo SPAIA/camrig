@@ -9,23 +9,34 @@ Click a trail to label its track ground-truth (insect/other/unsure, or the
 writes. Those labels are what ``camrig.optimise_filters`` searches against;
 this UI no longer tries to be the tuning workflow itself.
 
-The six insect-vs-plant discriminator thresholds (see ``camrig.motion``:
-``straightness``/``chronic``/``footprint_ratio``/``step_ratio``, plus a
-burst-event filter) are still here, in a collapsed "Advanced / debug
-filters" section, for inspecting *why* a track was kept or dropped -- not
-for hand-tuning production values by eye. Changing them live-persists into
-``config.toml`` the same as before, so a debug session doesn't leave the
-viewer out of sync with the sliders, but the intended way to change
-production thresholds is:
+The six original insect-vs-plant discriminator thresholds (see
+``camrig.motion``: ``straightness``/``chronic``/``footprint_ratio``/
+``step_ratio``, plus a burst-event filter) are still here, in a collapsed
+"Advanced / debug filters" section, for inspecting *why* a track was kept or
+dropped -- not for hand-tuning production values by eye. Changing them
+live-persists into ``config.toml`` the same as before, so a debug session
+doesn't leave the viewer out of sync with the sliders, but the intended way
+to change production thresholds is:
 
     camrig optimise-filters .
 
-which searches all six jointly against every labelled clip's ground truth --
-see its module docstring. A track caught by the burst filter is drawn muted
-rather than hidden, so a real insect swept up in a wind gust is still
-visible to rescue/relabel. Trail length/thickness match ``[postprocess]
-trail_seconds`` and ``camrig.motion_debug``'s rendered look, so this preview
-and the mp4 agree.
+which searches all ten (the six above plus a duration floor, a
+burst-direction refinement, and two track-stitching parameters) jointly
+against every labelled clip's ground truth -- see its module docstring.
+Which tracks are actually kept is computed SERVER-SIDE, by
+``camrig.scoring.survivor_ids`` running the exact same pipeline
+``camrig.optimise_filters``/``camrig label-score`` use (stitching, all ten
+thresholds, directional-burst exclusion) against the current
+``[postprocess]`` config -- not a simplified client-side reimplementation,
+so what's highlighted here always matches what the real filter keeps, even
+though the six sliders above only cover four of the ten parameters. A track
+caught by the burst filter is drawn muted rather than hidden, so a real
+insect swept up in a wind gust is still visible to rescue/relabel. The
+"kept false positives only" toggle isolates currently-surviving tracks
+already labelled ``other`` -- the concrete false positives production is
+keeping right now, worth watching to spot what's still slipping through.
+Trail length/thickness match ``[postprocess] trail_seconds`` and
+``camrig.motion_debug``'s rendered look, so this preview and the mp4 agree.
 
     camrig motion-view clip.mkv
 
@@ -44,9 +55,11 @@ from pathlib import Path
 
 from . import trim as trim_mod
 from .config import Config, set_config_value
+from .filters import FilterThresholds
 from .labels import LABELS, append_label, load_labels, remap_labels
 from .motion_debug import load_motion, motion_path
 from .postprocess import preview_path
+from .scoring import survivor_ids
 
 log = logging.getLogger("camrig.motion_view")
 
@@ -151,6 +164,7 @@ content="width=device-width,initial-scale=1">
   <h1>camrig motion-view</h1>
   <label><input type="checkbox" id="trails" checked> trails<kbd>t</kbd></label>
   <label><input type="checkbox" id="showAll"> show all (no filter)<kbd>a</kbd></label>
+  <label><input type="checkbox" id="fpOnly"> kept false positives only<kbd>f</kbd></label>
   <span id="trackCount" style="margin-left:auto;color:#8b93a1;font-size:12px"></span>
   <details class="advanced">
     <summary>Advanced / debug filters</summary>
@@ -230,10 +244,12 @@ content="width=device-width,initial-scale=1">
 </div>
 <div class="hint">
   Left/Right arrow: step 1 frame. Shift+Left/Right: step 10. Space: play/pause.
-  T: toggle trails. A: show all trails, ignoring the threshold sliders (burst
-  muting still applies). Grey boxes are every raw per-window detection;
-  coloured trails are linked tracks passing the threshold sliders, fading out
-  after a few frames. Labelled tracks are coloured by label:
+  T: toggle trails. A: show all trails, ignoring the current filter (burst
+  muting still applies). F: kept false positives only -- tracks currently
+  surviving the full filter (server-computed, all ten [postprocess]
+  thresholds) that are already labelled "other". Grey boxes are every raw
+  per-window detection; coloured trails are tracks the server says survive,
+  fading out after a few frames. Labelled tracks are coloured by label:
   <span style="color:#0f9d58">insect</span>,
   <span style="color:#db4437">other</span>,
   <span style="color:#f4b400">unsure</span>.
@@ -251,9 +267,18 @@ let minFootprintRatio = __MIN_FOOTPRINT_RATIO__;
 let maxStepRatio = __MAX_STEP_RATIO__;
 let burstWindowSeconds = __BURST_WINDOW_SECONDS__;
 let burstMinTracks = __BURST_MIN_TRACKS__;
+// passingSet/burstIds come from the server (see fetchSurvivors below) --
+// camrig.scoring.survivor_ids running the real pipeline (all ten
+// [postprocess] thresholds, stitching, directional burst exclusion), not a
+// client-side reimplementation. passingSet is every track whose group
+// cleared the scalar thresholds (duration included); burstIds is the
+// subset of that the burst filter then dropped -- drawn muted, not hidden,
+// same "flagged, not gone" convention as before.
+let passingSet = new Set();
 let burstIds = new Set();
 let showTrails = true;
 let showAll = false;
+let fpOnly = false;
 
 const video = document.getElementById('v');
 const canvas = document.getElementById('overlay');
@@ -273,40 +298,36 @@ fetch('/motion.json').then(r => r.json()).then(m => {
   canvas.width = m.width;
   canvas.height = m.height;
   m.windows.forEach((w, wi) => { for (let i = 0; i < w.n_frames; i++) frameWindows.push(wi); });
-  document.getElementById('trackCount').textContent = m.tracks.length + ' tracks';
-  recomputeBurst();
+  updateTrackCount();
+  fetchSurvivors();
   requestAnimationFrame(loop);
 });
 
-function passesThresholds(t) {
+function passesThresholds(t, ti) {
   if (showAll) return true;
-  return t.straightness >= minStraightness && t.chronic <= maxChronic &&
-    t.footprint_ratio >= minFootprintRatio && t.step_ratio <= maxStepRatio;
+  return passingSet.has(ti);
 }
 
-// Burst membership is clip-global (every candidate track's start time vs.
-// every other's), so it's recomputed only when the motion.json loads or a
-// threshold changes -- not per drawn frame.
-function recomputeBurst() {
-  burstIds = new Set();
-  if (!motion || burstMinTracks <= 0) return;
-  const starts = [];
-  motion.tracks.forEach((t, ti) => {
-    if (!passesThresholds(t)) return;
-    starts.push([motion.windows[t.w0].f / FPS, ti]);
+function fetchSurvivors() {
+  fetch('/survivors').then(r => r.json()).then(j => {
+    passingSet = new Set(j.passing);
+    burstIds = new Set(j.burst_excluded);
+    updateTrackCount();
   });
-  starts.sort((a, b) => a[0] - b[0]);
-  let lo = 0;
-  for (let hi = 0; hi < starts.length; hi++) {
-    while (starts[hi][0] - starts[lo][0] > burstWindowSeconds) lo++;
-    if (hi - lo + 1 >= burstMinTracks) {
-      for (let k = lo; k <= hi; k++) burstIds.add(starts[k][1]);
-    }
-  }
+}
+
+function updateTrackCount() {
+  if (!motion) return;
+  const kept = new Set([...passingSet].filter(ti => !burstIds.has(ti)));
+  const keptFalsePositives = [...kept].filter(ti => labeledTracks.get(ti) === 'other');
+  document.getElementById('trackCount').textContent =
+    motion.tracks.length + ' tracks, ' + kept.size + ' kept, ' +
+    keptFalsePositives.length + ' kept false positives';
 }
 
 fetch('/labels').then(r => r.json()).then(rows => {
   rows.forEach(r => labeledTracks.set(r.source_track, r.label));
+  updateTrackCount();
 });
 
 function windowAt(t) {
@@ -328,14 +349,18 @@ function draw(wIdx) {
   if (!showTrails) return;
   const trailWindows = Math.max(1, Math.round(TRAIL_SECONDS * FPS / windowFrames));
   motion.tracks.forEach((t, ti) => {
-    if (!passesThresholds(t)) return;
+    if (!passesThresholds(t, ti)) return;
+    const isBurst = burstIds.has(ti);
+    const label = labeledTracks.get(ti);
+    // "kept false positives only" isolates tracks the server currently
+    // keeps (passing AND not burst-excluded) that are already labelled
+    // "other" -- the concrete false positives production is keeping.
+    if (fpOnly && (isBurst || label !== 'other')) return;
     const relIdx = wIdx - t.w0;
     if (relIdx < 0 || relIdx > t.n - 1) return;
     const idxEnd = relIdx;
     const idxStart = Math.max(0, idxEnd - trailWindows + 1);
     const pts = t.path.slice(idxStart, idxEnd + 1);
-    const label = labeledTracks.get(ti);
-    const isBurst = burstIds.has(ti);
     // Burst-caught tracks aren't dropped -- just drawn muted/thin, so a real
     // insect swept up in a wind gust is still visible to rescue/relabel.
     const color = LABEL_COLORS[label] || (isBurst ? '#6b7280' : PALETTE[ti % PALETTE.length]);
@@ -567,6 +592,7 @@ function saveLabel(label) {
   }).then(r => r.json()).then(j => {
     if (j.ok) {
       labeledTracks.set(selected.ti, label);
+      updateTrackCount();
       closeModal();
     } else {
       alert('save failed: ' + j.error);
@@ -598,6 +624,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === ' ') { if (onFormControl) return; video.paused ? video.play() : video.pause(); e.preventDefault(); }
   else if (e.key === 't' || e.key === 'T') { toggleTrails(); e.preventDefault(); }
   else if (e.key === 'a' || e.key === 'A') { setShowAll(!showAll); e.preventDefault(); }
+  else if (e.key === 'f' || e.key === 'F') { setFpOnly(!fpOnly); e.preventDefault(); }
   else if (e.key === '[') { markCutIn(); e.preventDefault(); }
   else if (e.key === ']') { markCutOut(); e.preventDefault(); }
 });
@@ -635,19 +662,25 @@ burstWindowVal.textContent = burstWindowSeconds.toFixed(1);
 burstMinTracksVal.textContent = burstMinTracks.toFixed(0);
 
 // "show all" bypasses passesThresholds() entirely (see above), so every
-// linked track gets a trail regardless of the sliders -- burst muting still
-// applies on top, since that's a "flagged, not hidden" distinction, not a
-// filter. The sliders have no effect while this is on, so grey them out
-// rather than leave them looking live but inert.
+// linked track gets a trail regardless of the server's surviving set --
+// burst muting still applies on top, since that's a "flagged, not hidden"
+// distinction, not a filter. The sliders have no effect while this is on,
+// so grey them out rather than leave them looking live but inert.
 const showAllCheckbox = document.getElementById('showAll');
 const thresholdSliders = [minEl, maxEl, minFootprintEl, maxStepEl];
 function setShowAll(value) {
   showAll = value;
   showAllCheckbox.checked = showAll;
   thresholdSliders.forEach(el => { el.disabled = showAll; });
-  recomputeBurst();
 }
 showAllCheckbox.addEventListener('change', (e) => setShowAll(e.target.checked));
+
+const fpOnlyCheckbox = document.getElementById('fpOnly');
+function setFpOnly(value) {
+  fpOnly = value;
+  fpOnlyCheckbox.checked = fpOnly;
+}
+fpOnlyCheckbox.addEventListener('change', (e) => setFpOnly(e.target.checked));
 
 let saveTimer = null;
 function onThresholdChange() {
@@ -663,7 +696,6 @@ function onThresholdChange() {
   maxStepVal.textContent = maxStepRatio.toFixed(0);
   burstWindowVal.textContent = burstWindowSeconds.toFixed(1);
   burstMinTracksVal.textContent = burstMinTracks.toFixed(0);
-  recomputeBurst();
   saveStatus.textContent = 'saving...';
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveThresholds, 400);
@@ -686,6 +718,11 @@ function saveThresholds() {
     }),
   }).then(r => r.json()).then(j => {
     saveStatus.textContent = j.ok ? 'saved' : ('save failed: ' + j.error);
+    // The four sliders above are only part of the full filter (duration,
+    // burst direction and stitching aren't slider-exposed but still apply,
+    // read straight from config.toml) -- re-fetch the server's authoritative
+    // surviving set rather than approximate the new state client-side.
+    if (j.ok) fetchSurvivors();
   }).catch(() => { saveStatus.textContent = 'save failed'; });
 }
 </script>
@@ -696,6 +733,7 @@ function saveThresholds() {
 class _Handler(BaseHTTPRequestHandler):
     # Set on the server instance (see run()).
     video: Path
+    motion: dict
     cfg: Config
     config_path: Path
     framerate: float
@@ -713,6 +751,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._serve_file(motion_path(self.video), "application/json")
         elif path == "/labels":
             self._json_response(200, load_labels(self.video))
+        elif path == "/survivors":
+            self._serve_survivors()
         else:
             self.send_error(404)
 
@@ -741,6 +781,18 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _serve_survivors(self) -> None:
+        """Which raw tracks the FULL current [postprocess] filter pipeline
+        keeps -- all ten thresholds, stitching, directional burst exclusion
+        -- computed server-side via camrig.scoring.survivor_ids so the
+        browser never has to reimplement it. Recomputed fresh per request
+        (cheap -- see camrig.optimise_filters' own benchmarks) so a slider
+        change picked up by _save_thresholds is reflected on the next fetch.
+        """
+        thresholds = FilterThresholds.from_postprocess(self.cfg.postprocess)
+        passing, burst_excluded = survivor_ids(self.motion, thresholds, self.framerate)
+        self._json_response(200, {"passing": sorted(passing), "burst_excluded": sorted(burst_excluded)})
 
     def _serve_file(self, path: Path, content_type: str) -> None:
         try:
@@ -919,6 +971,7 @@ def run(cfg: Config, video: Path, config_path: Path, *, port: int = 8090) -> int
     server = ThreadingHTTPServer(("0.0.0.0", port), _Handler)
     server.daemon_threads = True
     _Handler.video = video
+    _Handler.motion = motion
     # This clip's OWN captured framerate (camrig.motion --framerate), not
     # necessarily whatever [capture] currently says -- see camrig.motion's
     # module docstring. Falls back to cfg.capture.framerate for a sidecar
