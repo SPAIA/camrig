@@ -50,6 +50,8 @@ import bisect
 import math
 from dataclasses import dataclass
 
+from .pts import FrameClock
+
 Point = tuple[float, float, float]  # (x, y in 0..1 normalized, t in seconds)
 
 DEFAULT_MAX_DISTANCE = 0.05
@@ -104,13 +106,15 @@ def from_label(record: dict) -> Trajectory:
     return Trajectory(path=path, provenance=f"label(source_track={record.get('source_track')})")
 
 
-def from_generated_track(track: dict, motion: dict, framerate: float, *,
+def from_generated_track(track: dict, motion: dict, clock: FrameClock, *,
                          index: int | None = None) -> Trajectory:
     """Normalize a raw ``camrig.motion`` track from a (possibly different)
     run's ``motion.json`` into the same ``[x in 0..1, y in 0..1, t seconds]``
     form labels use, so it can be compared to a label regardless of that
     run's resolution or window size. Mirrors ``camrig.motion_view``'s
-    client-side ``saveLabel()``, which builds a label's path the same way.
+    client-side ``saveLabel()``, which builds a label's path the same way --
+    both use ``clock`` (see ``camrig.pts``) for real per-frame wall-clock
+    time rather than a nominal framerate.
     """
     width, height = motion["width"], motion["height"]
     windows = motion["windows"]
@@ -118,7 +122,7 @@ def from_generated_track(track: dict, motion: dict, framerate: float, *,
     points = []
     for i, (x, y) in enumerate(track["path"]):
         win = windows[w0 + i]
-        t = (win["f"] + win["n_frames"] / 2) / framerate
+        t = clock.time(win["f"] + win["n_frames"] / 2)
         points.append((x / width, y / height, t))
     provenance = f"track {index}" if index is not None else f"track w0={w0}"
     return Trajectory(path=tuple(points), provenance=provenance)

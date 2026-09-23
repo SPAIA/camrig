@@ -82,9 +82,17 @@ def extract_segment_cmd(video: Path, out_path: Path, start_frame: int, n_frames:
     """ffmpeg argv: lossless stream-copy of frames ``[start_frame, start_frame + n_frames)``.
 
     ``-ss`` before ``-i`` seeks to the exact frame (every frame is a keyframe
-    in these profiles, so keyframe-accurate seeking *is* frame-accurate);
-    ``-frames:v`` rather than ``-to`` pins the exact count so float rounding
-    at the boundary can't drop or duplicate a frame.
+    in these profiles, so keyframe-accurate seeking *is* frame-accurate).
+    ``framerate`` here deliberately stays the NOMINAL capture rate, not the
+    real per-frame ``.pts`` timing (contrast ``camrig.stitch``/
+    ``camrig.scoring``, which do use real timing): the raw ``.mkv`` itself is
+    muxed with synthetic, constant-rate timestamps (``camrig.record``'s
+    ``ffmpeg -r <framerate> ... -c copy``, since the piped MJPEG stream
+    carries no timing of its own), so frame N genuinely sits at container
+    time N/framerate regardless of when it was actually captured -- seeking
+    against the clip's REAL wall-clock time here would land on the wrong
+    frame. ``-frames:v`` rather than ``-to`` pins the exact count so float
+    rounding at the boundary can't drop or duplicate a frame.
     """
     return [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",

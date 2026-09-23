@@ -8,6 +8,7 @@ successor's start time minus that.
 
 import pytest
 
+from camrig.pts import FrameClock
 from camrig.stitch import find_groups, stitch_motion
 
 
@@ -25,7 +26,7 @@ def _motion(tracks, width=100, height=100, window=6, n_windows=200):
     }
 
 
-FPS = 60.0
+FPS = FrameClock.constant(60.0)
 
 
 def test_two_close_tracks_merge_into_one_group():

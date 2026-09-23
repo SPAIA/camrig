@@ -3,6 +3,7 @@ expected outcomes for each case the matcher must cope with (see its module
 docstring for the matching rule).
 """
 
+from camrig.pts import FrameClock
 from camrig.trajectory_match import (
     Trajectory,
     best_matches,
@@ -124,7 +125,7 @@ def test_from_generated_track_normalizes_pixels_and_derives_time():
         ],
     }
     track = {"w0": 0, "path": [[20.0, 10.0], [40.0, 20.0], [60.0, 30.0]]}
-    traj = from_generated_track(track, motion, framerate=60.0, index=3)
+    traj = from_generated_track(track, motion, FrameClock.constant(60.0), index=3)
     assert traj.path[0] == (0.1, 0.1, 3 / 60.0)
     assert traj.path[1] == (0.2, 0.2, 9 / 60.0)
     assert traj.path[2] == (0.3, 0.3, 15 / 60.0)

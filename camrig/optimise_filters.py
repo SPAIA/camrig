@@ -41,6 +41,7 @@ from .filters import PARAM_BOUNDS, FilterThresholds
 from .labels import LABELS_SUFFIX, load_labels
 from .motion import SCHEMA as MOTION_SCHEMA
 from .postprocess import motion_path
+from .pts import FrameClock, load_frame_times
 from .scoring import ScoreResult, score_tracks
 from .stitch import precompute_candidates
 
@@ -106,7 +107,7 @@ class ClipDataset:
     video: Path
     motion: dict
     labels: list[dict]
-    framerate: float
+    clock: FrameClock
     # Every plausible track-stitch candidate pair up to the widest
     # stitch_max_gap_seconds the search space allows (see
     # camrig.stitch.precompute_candidates), computed once here rather than
@@ -119,12 +120,15 @@ def load_dataset(videos: list[Path], default_framerate: float) -> list[ClipDatas
     front -- the whole point of Phase 1 is that a trial never touches disk
     (or re-scans every track pair for stitching candidates).
 
-    Each clip uses ITS OWN captured framerate (``motion["framerate"]``, see
-    ``camrig.motion``'s module docstring) rather than one value applied to
-    every clip -- clips captured under different ``[capture]`` framerates
-    can coexist in one dataset this way. ``default_framerate`` (normally
-    ``cfg.capture.framerate``) is only the fallback for a sidecar written
-    before ``camrig.motion --framerate`` existed.
+    Each clip uses its own real per-frame ``.pts`` timestamps when that
+    sidecar exists (see ``camrig.pts``) rather than one nominal rate applied
+    to every clip -- clips captured under different ``[capture]`` framerates,
+    or ones whose actual capture rate drifted from nominal under I/O load,
+    can all coexist correctly in one dataset this way. A clip missing its
+    ``.pts`` falls back to a constant rate: its OWN captured framerate
+    (``motion["framerate"]``) if present, else ``default_framerate``
+    (normally ``cfg.capture.framerate``) for a sidecar written before
+    ``camrig.motion --framerate`` existed.
     """
     stitch_gap_bound = PARAM_BOUNDS["stitch_max_gap_seconds"][1]
     stitch_dist_bound = PARAM_BOUNDS["stitch_max_gap_distance"][1]
@@ -133,10 +137,14 @@ def load_dataset(videos: list[Path], default_framerate: float) -> list[ClipDatas
         motion = _load_motion_json(video)
         if motion is None:
             continue
-        framerate = motion.get("framerate", default_framerate)
-        candidates = precompute_candidates(motion, framerate, stitch_gap_bound, stitch_dist_bound)
+        pts_path = video.with_suffix(".pts")
+        if pts_path.exists():
+            clock = FrameClock.from_pts(load_frame_times(pts_path))
+        else:
+            clock = FrameClock.constant(motion.get("framerate", default_framerate))
+        candidates = precompute_candidates(motion, clock, stitch_gap_bound, stitch_dist_bound)
         datasets.append(ClipDataset(video=video, motion=motion, labels=load_labels(video),
-                                    framerate=framerate, stitch_candidates=candidates))
+                                    clock=clock, stitch_candidates=candidates))
     return datasets
 
 
@@ -161,7 +169,7 @@ def evaluate(datasets: list[ClipDataset], thresholds: FilterThresholds, *,
     """
     agg = DatasetScore()
     for ds in datasets:
-        r = score_tracks(ds.motion, ds.labels, thresholds, ds.framerate, detail=detail,
+        r = score_tracks(ds.motion, ds.labels, thresholds, ds.clock, detail=detail,
                          stitch_candidates=ds.stitch_candidates)
         agg.insect_total += r.insect_total
         agg.insect_kept += r.insect_kept

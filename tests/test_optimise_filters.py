@@ -54,7 +54,7 @@ def test_load_dataset_reads_motion_and_labels(tmp_path):
     ds = datasets[0]
     assert ds.motion["tracks"] == [_track(w0=0)]
     assert len(ds.labels) == 1
-    assert ds.framerate == 60.0
+    assert ds.clock.time(60) == 1.0  # constant 60fps clock (no .pts sidecar on disk)
 
 
 def test_load_dataset_uses_each_clips_own_framerate_over_the_default(tmp_path):
@@ -72,8 +72,8 @@ def test_load_dataset_uses_each_clips_own_framerate_over_the_default(tmp_path):
     _write_clip(b, [_track(w0=0)], [("insect", 0)])  # no "framerate" key -> uses the default
 
     datasets = {ds.video.name: ds for ds in of.load_dataset([a, b], default_framerate=60.0)}
-    assert datasets["clip_a.mkv"].framerate == 120.0
-    assert datasets["clip_b.mkv"].framerate == 60.0
+    assert datasets["clip_a.mkv"].clock.time(120) == 1.0
+    assert datasets["clip_b.mkv"].clock.time(60) == 1.0
 
 
 def test_evaluate_aggregates_across_clips(tmp_path):

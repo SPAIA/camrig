@@ -4,6 +4,7 @@ import math
 
 from camrig.config import PostprocessConfig
 from camrig.motion_debug import burst_track_ids, passes_thresholds
+from camrig.pts import FrameClock
 
 
 def _track(straightness=1.0, chronic=0.0, footprint_ratio=10.0, step_ratio=1.0, w0=0,
@@ -53,7 +54,7 @@ def test_burst_track_ids_flags_dense_cluster_only():
     tracks = [_track(w0=w0) for w0 in [0, 1, 2, 3, 4, 20]]
     ids = list(range(len(tracks)))
 
-    burst = burst_track_ids(motion, tracks, ids, framerate=60.0,
+    burst = burst_track_ids(motion, tracks, ids, FrameClock.constant(60.0),
                             window_seconds=1.0, min_tracks=5)
     assert burst == {0, 1, 2, 3, 4}
 
@@ -64,7 +65,7 @@ def test_burst_track_ids_disabled_when_min_tracks_zero():
     tracks = [_track(w0=w0) for w0 in range(5)]
     ids = list(range(len(tracks)))
 
-    assert burst_track_ids(motion, tracks, ids, framerate=60.0,
+    assert burst_track_ids(motion, tracks, ids, FrameClock.constant(60.0),
                            window_seconds=1.0, min_tracks=0) == set()
 
 
@@ -75,7 +76,7 @@ def test_burst_track_ids_ignores_tracks_outside_the_given_ids():
     motion = {"windows": windows}
     tracks = [_track(w0=w0) for w0 in [0, 1, 2, 3, 4]]
 
-    assert burst_track_ids(motion, tracks, ids=[0, 1], framerate=60.0,
+    assert burst_track_ids(motion, tracks, [0, 1], FrameClock.constant(60.0),
                            window_seconds=1.0, min_tracks=5) == set()
 
 
@@ -88,7 +89,7 @@ def test_burst_track_ids_flags_a_directionally_coherent_cluster():
     tracks = [_track(w0=w0, path=[[0, 0], [10, 0]]) for w0 in [0, 1, 2, 3, 4]]
     ids = list(range(len(tracks)))
 
-    burst = burst_track_ids(motion, tracks, ids, framerate=60.0, window_seconds=1.0,
+    burst = burst_track_ids(motion, tracks, ids, FrameClock.constant(60.0), window_seconds=1.0,
                             min_tracks=5, max_direction_deviation=math.radians(20))
     assert burst == {0, 1, 2, 3, 4}
 
@@ -104,11 +105,11 @@ def test_burst_track_ids_rescues_a_direction_outlier_within_a_dense_cluster():
     tracks.insert(2, _track(w0=2, path=[[10, 0], [0, 0]]))  # heading pi, opposite the rest
     ids = list(range(len(tracks)))
 
-    strict = burst_track_ids(motion, tracks, ids, framerate=60.0, window_seconds=1.0,
+    strict = burst_track_ids(motion, tracks, ids, FrameClock.constant(60.0), window_seconds=1.0,
                              min_tracks=5, max_direction_deviation=math.radians(20))
     assert strict == {0, 1, 3, 4}, "the opposite-heading track should be rescued"
 
-    lenient = burst_track_ids(motion, tracks, ids, framerate=60.0, window_seconds=1.0,
+    lenient = burst_track_ids(motion, tracks, ids, FrameClock.constant(60.0), window_seconds=1.0,
                               min_tracks=5)  # default max_direction_deviation=pi
     assert lenient == {0, 1, 2, 3, 4}, "with no directional refinement, everyone is flagged"
 
@@ -123,6 +124,6 @@ def test_burst_track_ids_treats_zero_displacement_track_as_unjudgeable():
     tracks.insert(2, _track(w0=2, path=[[5, 5], [5, 5]]))  # zero net displacement
     ids = list(range(len(tracks)))
 
-    burst = burst_track_ids(motion, tracks, ids, framerate=60.0, window_seconds=1.0,
+    burst = burst_track_ids(motion, tracks, ids, FrameClock.constant(60.0), window_seconds=1.0,
                             min_tracks=5, max_direction_deviation=math.radians(1))
     assert 2 in burst

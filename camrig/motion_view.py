@@ -59,6 +59,7 @@ from .filters import FilterThresholds
 from .labels import LABELS, append_label, load_labels, remap_labels
 from .motion_debug import load_motion, motion_path
 from .postprocess import preview_path
+from .pts import FrameClock, load_frame_times
 from .scoring import survivor_ids
 
 log = logging.getLogger("camrig.motion_view")
@@ -291,6 +292,13 @@ const LABEL_COLORS = {insect: '#0f9d58', other: '#db4437', unsure: '#f4b400'};
 let motion = null, frameWindows = [], windowFrames = 6;
 let drawnTracks = [];  // this frame's {ti, track, pts} that passed the filter, for click-to-label
 const labeledTracks = new Map();  // source_track -> label, from saved labels.jsonl
+// Real per-frame wall-clock seconds (camrig.pts), for timing SAVED labels
+// accurately -- capture framerate is only nominal (actual timing drifts
+// under I/O load), so labels use this instead of frame/FPS. Playback/scrub
+// position (FPS-based, above) stays approximate: it's synced to clip.mp4's
+// own constant-rate preview encode, a separate clock this array doesn't
+// describe.
+let frameTimes = [];
 
 fetch('/motion.json').then(r => r.json()).then(m => {
   motion = m;
@@ -302,6 +310,15 @@ fetch('/motion.json').then(r => r.json()).then(m => {
   fetchSurvivors();
   requestAnimationFrame(loop);
 });
+
+fetch('/frame_times').then(r => r.json()).then(ft => { frameTimes = ft; });
+
+function timeAtFrame(f) {
+  if (!frameTimes.length) return f / FPS;
+  const lo = Math.max(0, Math.min(Math.floor(f), frameTimes.length - 1));
+  const hi = Math.min(lo + 1, frameTimes.length - 1);
+  return frameTimes[lo] + (f - lo) * (frameTimes[hi] - frameTimes[lo]);
+}
 
 function passesThresholds(t, ti) {
   if (showAll) return true;
@@ -570,7 +587,7 @@ function saveLabel(label) {
   const t = selected.track;
   const path = t.path.map((p, i) => {
     const w = motion.windows[t.w0 + i];
-    const time = (w.f + w.n_frames / 2) / FPS;
+    const time = timeAtFrame(w.f + w.n_frames / 2);
     return [
       Math.round(p[0] / motion.width * 1000) / 1000,
       Math.round(p[1] / motion.height * 1000) / 1000,
@@ -736,7 +753,8 @@ class _Handler(BaseHTTPRequestHandler):
     motion: dict
     cfg: Config
     config_path: Path
-    framerate: float
+    clock: FrameClock
+    nominal_fps: float  # for client-side playback/scrub UI only -- see run()
 
     def log_message(self, *args) -> None:  # quiet; the app logs what it needs
         pass
@@ -753,6 +771,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._json_response(200, load_labels(self.video))
         elif path == "/survivors":
             self._serve_survivors()
+        elif path == "/frame_times":
+            self._json_response(200, self.clock.as_list(self.motion.get("frame_count", 0)))
         else:
             self.send_error(404)
 
@@ -770,7 +790,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _serve_page(self) -> None:
         cfg = self.cfg
         body = _page(
-            self.video.name, self.framerate,
+            self.video.name, self.nominal_fps,
             cfg.postprocess.min_straightness, cfg.postprocess.max_chronic,
             cfg.postprocess.min_footprint_ratio, cfg.postprocess.max_step_ratio,
             cfg.postprocess.burst_window_seconds, cfg.postprocess.burst_min_tracks,
@@ -791,7 +811,7 @@ class _Handler(BaseHTTPRequestHandler):
         change picked up by _save_thresholds is reflected on the next fetch.
         """
         thresholds = FilterThresholds.from_postprocess(self.cfg.postprocess)
-        passing, burst_excluded = survivor_ids(self.motion, thresholds, self.framerate)
+        passing, burst_excluded = survivor_ids(self.motion, thresholds, self.clock)
         self._json_response(200, {"passing": sorted(passing), "burst_excluded": sorted(burst_excluded)})
 
     def _serve_file(self, path: Path, content_type: str) -> None:
@@ -935,6 +955,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._json_response(400, {"ok": False, "error": str(exc)})
             return
 
+        # Real per-frame timing on both sides of the cut (see camrig.pts):
+        # captured BEFORE apply_cuts rewrites the .pts sidecar, so old_clock
+        # still reflects pre-trim frame indices, then reloaded after for
+        # new_clock -- a constant-rate clock would misplace label points
+        # wherever actual capture timing drifted from nominal.
+        old_clock = FrameClock.from_pts(load_frame_times(self.video.with_suffix(".pts")))
         try:
             result = trim_mod.apply_cuts(self.video, self.cfg.capture.framerate, cuts)
         except (ValueError, RuntimeError) as exc:
@@ -942,7 +968,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._json_response(200, {"ok": False, "error": str(exc)})
             return
 
-        _, dropped = remap_labels(self.video, self.cfg.capture.framerate, result.frame_map)
+        new_clock = FrameClock.from_pts(load_frame_times(self.video.with_suffix(".pts")))
+        _, dropped = remap_labels(self.video, old_clock, new_clock, result.frame_map)
+        # Keep server state in sync in case another request lands before the
+        # UI's prompted page reload.
+        type(self).clock = new_clock
         self._json_response(200, {
             "ok": True,
             "frames_before": result.frames_before,
@@ -975,8 +1005,14 @@ def run(cfg: Config, video: Path, config_path: Path, *, port: int = 8090) -> int
     # This clip's OWN captured framerate (camrig.motion --framerate), not
     # necessarily whatever [capture] currently says -- see camrig.motion's
     # module docstring. Falls back to cfg.capture.framerate for a sidecar
-    # written before that field existed.
-    _Handler.framerate = motion.get("framerate", cfg.capture.framerate)
+    # written before that field existed. Used only for client-side
+    # playback/scrub UI, which is synced to clip.mp4's own constant-rate
+    # preview encode -- survivor scoring and saved-label timing use the real
+    # per-frame clock below instead.
+    _Handler.nominal_fps = motion.get("framerate", cfg.capture.framerate)
+    pts_path = video.with_suffix(".pts")
+    _Handler.clock = (FrameClock.from_pts(load_frame_times(pts_path)) if pts_path.exists()
+                      else FrameClock.constant(_Handler.nominal_fps))
     _Handler.cfg = cfg
     _Handler.config_path = config_path
 

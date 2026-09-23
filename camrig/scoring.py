@@ -35,6 +35,7 @@ from .config import Config
 from .filters import FilterThresholds
 from .labels import load_labels
 from .motion_debug import burst_track_ids, load_motion, passes_thresholds
+from .pts import FrameClock, load_frame_times
 from .stitch import StitchResult, stitch_motion
 
 
@@ -101,7 +102,7 @@ def _resolve_group_label(labels_in_group: set[str]) -> str:
     return "unsure"
 
 
-def _compute_survival(motion: dict, thresholds: FilterThresholds, framerate: float, *,
+def _compute_survival(motion: dict, thresholds: FilterThresholds, clock: FrameClock, *,
                       stitch_candidates: list[tuple] | None = None,
                       ) -> tuple[StitchResult, set[int], set[int]]:
     """Shared by ``score_tracks`` and ``survivor_ids``: stitch, then apply
@@ -110,7 +111,7 @@ def _compute_survival(motion: dict, thresholds: FilterThresholds, framerate: flo
     into ``stitched.tracks``), not raw track indices; ``candidate_group_ids
     - burst_excluded_group_ids`` is the final surviving set.
     """
-    stitched = stitch_motion(motion, framerate,
+    stitched = stitch_motion(motion, clock,
                              max_gap_seconds=thresholds.stitch_max_gap_seconds,
                              max_gap_distance=thresholds.stitch_max_gap_distance,
                              candidates=stitch_candidates)
@@ -120,14 +121,14 @@ def _compute_survival(motion: dict, thresholds: FilterThresholds, framerate: flo
     candidate_ids = [ti for ti, t in enumerate(tracks) if passes_thresholds(t, thresholds)]
     candidate_id_set = set(candidate_ids)
     burst_ids = burst_track_ids(
-        stitched_motion, tracks, candidate_ids, framerate,
+        stitched_motion, tracks, candidate_ids, clock,
         thresholds.burst_window_seconds, thresholds.burst_min_tracks,
         max_direction_deviation=thresholds.burst_max_direction_deviation,
     )
     return stitched, candidate_id_set, burst_ids
 
 
-def survivor_ids(motion: dict, thresholds: FilterThresholds, framerate: float) -> tuple[set[int], set[int]]:
+def survivor_ids(motion: dict, thresholds: FilterThresholds, clock: FrameClock) -> tuple[set[int], set[int]]:
     """Every RAW ``motion["tracks"]`` index currently kept by the full
     filter pipeline (stitching, then the scalar thresholds, then the
     directional-burst filter) -- the same computation
@@ -150,7 +151,7 @@ def survivor_ids(motion: dict, thresholds: FilterThresholds, framerate: float) -
     filter then dropped. A raw track not in ``passing`` at all failed the
     scalar thresholds outright.
     """
-    stitched, candidate_group_ids, burst_group_ids = _compute_survival(motion, thresholds, framerate)
+    stitched, candidate_group_ids, burst_group_ids = _compute_survival(motion, thresholds, clock)
     passing = {raw_ti for raw_ti, group_id in stitched.member_to_group.items()
               if group_id in candidate_group_ids}
     burst_excluded = {raw_ti for raw_ti, group_id in stitched.member_to_group.items()
@@ -159,7 +160,7 @@ def survivor_ids(motion: dict, thresholds: FilterThresholds, framerate: float) -
 
 
 def score_tracks(motion: dict, labels: list[dict], thresholds: FilterThresholds,
-                 framerate: float, *, detail: bool = True,
+                 clock: FrameClock, *, detail: bool = True,
                  stitch_candidates: list[tuple] | None = None) -> ScoreResult:
     """Score ``thresholds`` against already-loaded ``motion``/``labels`` for
     ONE clip. Pure in-memory, no I/O -- cheap enough to call thousands of
@@ -183,7 +184,7 @@ def score_tracks(motion: dict, labels: list[dict], thresholds: FilterThresholds,
     track-pair candidates on every call in a search loop.
     """
     stitched, candidate_id_set, burst_ids = _compute_survival(
-        motion, thresholds, framerate, stitch_candidates=stitch_candidates)
+        motion, thresholds, clock, stitch_candidates=stitch_candidates)
     surviving_ids = candidate_id_set - burst_ids
 
     by_raw_track: dict[int, dict] = {}
@@ -204,8 +205,8 @@ def score_tracks(motion: dict, labels: list[dict], thresholds: FilterThresholds,
 
     result = ScoreResult(surviving_total=len(surviving_ids))
     frame_count = motion.get("frame_count")
-    if frame_count and framerate:
-        result.duration_seconds = frame_count / framerate
+    if frame_count:
+        result.duration_seconds = clock.time(frame_count) - clock.time(0)
 
     for group_id, labels_in_group in group_labels.items():
         label = _resolve_group_label(labels_in_group)
@@ -235,17 +236,20 @@ def score(cfg: Config, video: Path) -> ScoreResult | None:
     each clip's motion/labels once and calls ``score_tracks`` directly many
     times instead of re-reading files per trial.
 
-    Uses this clip's OWN captured framerate (``motion["framerate"]``, from
-    ``camrig.motion --framerate``) when the sidecar has one, falling back to
-    ``cfg.capture.framerate`` for a sidecar written before that field
-    existed -- see ``camrig.motion``'s module docstring for why a single
-    global framerate isn't safe once clips shot under different
-    ``[capture]`` settings coexist.
+    Uses this clip's own real per-frame ``.pts`` timestamps when the sidecar
+    exists (see ``camrig.pts``), falling back to a constant nominal rate --
+    this clip's OWN captured framerate (``motion["framerate"]``) if present,
+    else ``cfg.capture.framerate`` -- for a clip missing its ``.pts`` or
+    written before ``camrig.motion --framerate`` existed.
     """
     motion = load_motion(video)
     if motion is None:
         return None
     labels = load_labels(video)
     thresholds = FilterThresholds.from_postprocess(cfg.postprocess)
-    framerate = motion.get("framerate", cfg.capture.framerate)
-    return score_tracks(motion, labels, thresholds, framerate)
+    pts_path = video.with_suffix(".pts")
+    if pts_path.exists():
+        clock = FrameClock.from_pts(load_frame_times(pts_path))
+    else:
+        clock = FrameClock.constant(motion.get("framerate", cfg.capture.framerate))
+    return score_tracks(motion, labels, thresholds, clock)

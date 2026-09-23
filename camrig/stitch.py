@@ -60,6 +60,8 @@ import math
 from dataclasses import dataclass
 from statistics import median
 
+from .pts import FrameClock
+
 
 @dataclass
 class StitchResult:
@@ -67,14 +69,14 @@ class StitchResult:
     member_to_group: dict[int, int]  # raw track index (into the ORIGINAL tracks list) -> index into `tracks`
 
 
-def _track_time_range(track: dict, windows: list[dict], framerate: float) -> tuple[float, float]:
+def _track_time_range(track: dict, windows: list[dict], clock: FrameClock) -> tuple[float, float]:
     w0 = track["w0"]
-    t0 = windows[w0]["f"] / framerate
-    t1 = windows[w0 + track["n"] - 1]["f"] / framerate
+    t0 = clock.time(windows[w0]["f"])
+    t1 = clock.time(windows[w0 + track["n"] - 1]["f"])
     return t0, t1
 
 
-def _find_candidates(tracks: list[dict], windows: list[dict], width: float, framerate: float,
+def _find_candidates(tracks: list[dict], windows: list[dict], width: float, clock: FrameClock,
                      max_gap_seconds: float, max_gap_distance: float) -> list[tuple[float, float, int, int]]:
     """Every ``(gap, dist, predecessor_idx, successor_idx)`` with
     ``0 <= gap <= max_gap_seconds`` AND ``dist <= max_gap_distance``, sorted
@@ -92,7 +94,7 @@ def _find_candidates(tracks: list[dict], windows: list[dict], width: float, fram
     starts: list[float] = []
     ends: list[float] = []
     for t in tracks:
-        t0, t1 = _track_time_range(t, windows, framerate)
+        t0, t1 = _track_time_range(t, windows, clock)
         starts.append(t0)
         ends.append(t1)
 
@@ -146,7 +148,7 @@ def _greedy_chains(n: int, candidates: list[tuple[float, float, int, int]], *,
     return groups
 
 
-def precompute_candidates(motion: dict, framerate: float, max_gap_seconds_bound: float,
+def precompute_candidates(motion: dict, clock: FrameClock, max_gap_seconds_bound: float,
                           max_gap_distance_bound: float) -> list[tuple[float, float, int, int]]:
     """Every plausible-successor pair up to ``max_gap_seconds_bound``/
     ``max_gap_distance_bound`` (typically
@@ -158,7 +160,7 @@ def precompute_candidates(motion: dict, framerate: float, max_gap_seconds_bound:
     re-scanning every track pair -- this is what keeps a trial with
     stitching in the search space cheap.
     """
-    return _find_candidates(motion["tracks"], motion["windows"], motion["width"], framerate,
+    return _find_candidates(motion["tracks"], motion["windows"], motion["width"], clock,
                             max_gap_seconds_bound, max_gap_distance_bound)
 
 
@@ -174,7 +176,7 @@ def find_groups_from_candidates(n_tracks: int, candidates: list[tuple[float, flo
                           max_gap_seconds=max_gap_seconds, max_gap_distance=max_gap_distance)
 
 
-def find_groups(motion: dict, framerate: float, *,
+def find_groups(motion: dict, clock: FrameClock, *,
                 max_gap_seconds: float, max_gap_distance: float) -> list[list[int]]:
     """Partition every track index in ``motion["tracks"]`` into time-ordered
     chains of likely-same-object fragments (see the module docstring for the
@@ -191,13 +193,13 @@ def find_groups(motion: dict, framerate: float, *,
     n = len(tracks)
     if n == 0 or max_gap_seconds <= 0 or max_gap_distance <= 0:
         return [[i] for i in range(n)]
-    candidates = _find_candidates(tracks, motion["windows"], motion["width"], framerate,
+    candidates = _find_candidates(tracks, motion["windows"], motion["width"], clock,
                                   max_gap_seconds, max_gap_distance)
     return _greedy_chains(n, candidates, max_gap_seconds=max_gap_seconds, max_gap_distance=max_gap_distance)
 
 
 def _duration_seconds(first: dict, last: dict, windows: list[dict], window_frames: int,
-                      framerate: float) -> float:
+                      clock: FrameClock) -> float:
     """Wall-clock span from the start of ``first``'s first window to the end
     of ``last``'s last window. For a singleton group (``first is last``)
     this is just that one track's own alive time. For a merged group it
@@ -206,16 +208,16 @@ def _duration_seconds(first: dict, last: dict, windows: list[dict], window_frame
     insect's true duration includes the time it was briefly untracked, not
     just the sum of what each fragment individually covered.
     """
-    start = windows[first["w0"]]["f"] / framerate
-    end = (windows[last["w0"] + last["n"] - 1]["f"] + window_frames) / framerate
+    start = clock.time(windows[first["w0"]]["f"])
+    end = clock.time(windows[last["w0"] + last["n"] - 1]["f"] + window_frames)
     return round(end - start, 3)
 
 
 def _merge_group(indices: list[int], tracks: list[dict], windows: list[dict],
-                 window_frames: int, framerate: float) -> dict:
+                 window_frames: int, clock: FrameClock) -> dict:
     """Build one merged track dict from raw track indices, oldest first."""
     members = [tracks[i] for i in indices]
-    duration_seconds = _duration_seconds(members[0], members[-1], windows, window_frames, framerate)
+    duration_seconds = _duration_seconds(members[0], members[-1], windows, window_frames, clock)
     if len(members) == 1:
         merged = dict(members[0])
         merged["members"] = tuple(indices)
@@ -255,7 +257,7 @@ def _merge_group(indices: list[int], tracks: list[dict], windows: list[dict],
     }
 
 
-def stitch_motion(motion: dict, framerate: float, *,
+def stitch_motion(motion: dict, clock: FrameClock, *,
                   max_gap_seconds: float, max_gap_distance: float,
                   candidates: list[tuple[float, float, int, int]] | None = None) -> StitchResult:
     """Merge ``motion["tracks"]`` into stitched tracks, each carrying a
@@ -279,12 +281,12 @@ def stitch_motion(motion: dict, framerate: float, *,
                                              max_gap_seconds=max_gap_seconds,
                                              max_gap_distance=max_gap_distance)
     else:
-        groups = find_groups(motion, framerate,
+        groups = find_groups(motion, clock,
                              max_gap_seconds=max_gap_seconds, max_gap_distance=max_gap_distance)
     merged_tracks: list[dict] = []
     member_to_group: dict[int, int] = {}
     for group_id, indices in enumerate(groups):
-        merged_tracks.append(_merge_group(indices, tracks, windows, window_frames, framerate))
+        merged_tracks.append(_merge_group(indices, tracks, windows, window_frames, clock))
         for raw_i in indices:
             member_to_group[raw_i] = group_id
     return StitchResult(tracks=merged_tracks, member_to_group=member_to_group)

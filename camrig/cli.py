@@ -92,14 +92,25 @@ def _cmd_postprocess(args, cfg) -> int:
 def _cmd_trim(args, cfg) -> int:
     from pathlib import Path
     from . import labels, trim
+    from .pts import FrameClock, load_frame_times
 
     video = Path(args.clip)
     fps = cfg.capture.framerate
+    pts_path = video.with_suffix(".pts")
+    # --cut is given in real wall-clock seconds, so map it to a frame index
+    # via the clip's own real .pts timing (falling back to the nominal rate
+    # if that sidecar is missing) -- see camrig.pts for why capture framerate
+    # alone can be off. apply_cuts/describe_cuts below still take the NOMINAL
+    # fps: the raw .mkv's own frame timestamps are synthetic/constant-rate
+    # (see extract_segment_cmd's docstring), so container-facing seeking
+    # must stay on that same clock.
+    old_clock = (FrameClock.from_pts(load_frame_times(pts_path)) if pts_path.exists()
+                else FrameClock.constant(fps))
     cuts = []
     for spec in args.cut:
         try:
             start_s, end_s = spec.split("-", 1)
-            cuts.append((round(float(start_s) * fps), round(float(end_s) * fps)))
+            cuts.append((old_clock.nearest_index(float(start_s)), old_clock.nearest_index(float(end_s))))
         except ValueError:
             print(f"bad --cut {spec!r}; expected START-END in seconds", file=sys.stderr)
             return 1
@@ -118,7 +129,8 @@ def _cmd_trim(args, cfg) -> int:
     print(f"{video.name}: {result.frames_before} -> {result.frames_after} frames "
           f"({result.frames_before - result.frames_after} cut)")
 
-    _, dropped = labels.remap_labels(video, fps, result.frame_map)
+    new_clock = FrameClock.from_pts(load_frame_times(pts_path))
+    _, dropped = labels.remap_labels(video, old_clock, new_clock, result.frame_map)
     if dropped:
         print(f"{len(dropped)} label(s) dropped (fell inside a cut):")
         for d in dropped:

@@ -7,6 +7,7 @@ from camrig import scoring
 from camrig.config import CaptureConfig, Config, PostprocessConfig
 from camrig.filters import FilterThresholds
 from camrig.labels import append_label
+from camrig.pts import FrameClock
 from camrig.motion import SCHEMA
 
 
@@ -170,7 +171,7 @@ def test_survivor_ids_reports_passing_tracks_by_raw_index():
     motion = _motion([passes, fails])
     thresholds = FilterThresholds(min_straightness=0.5, max_chronic=0.1)
 
-    passing, burst_excluded = scoring.survivor_ids(motion, thresholds, framerate=60.0)
+    passing, burst_excluded = scoring.survivor_ids(motion, thresholds, FrameClock.constant(60.0))
     assert passing == {0}
     assert burst_excluded == set()
 
@@ -184,7 +185,7 @@ def test_survivor_ids_includes_burst_excluded_tracks_in_passing_but_flags_them()
     thresholds = FilterThresholds(min_straightness=0.5, max_chronic=0.1,
                                   burst_window_seconds=1.0, burst_min_tracks=3)
 
-    passing, burst_excluded = scoring.survivor_ids(motion, thresholds, framerate=60.0)
+    passing, burst_excluded = scoring.survivor_ids(motion, thresholds, FrameClock.constant(60.0))
     assert passing == {0, 1, 2}
     assert burst_excluded == {0, 1, 2}
 
@@ -198,6 +199,6 @@ def test_survivor_ids_marks_every_raw_member_of_a_surviving_stitched_group():
     thresholds = FilterThresholds(min_straightness=0.5, max_chronic=0.1,
                                   stitch_max_gap_seconds=0.5, stitch_max_gap_distance=0.5)
 
-    passing, burst_excluded = scoring.survivor_ids(motion, thresholds, framerate=60.0)
+    passing, burst_excluded = scoring.survivor_ids(motion, thresholds, FrameClock.constant(60.0))
     assert passing == {0, 1}
     assert burst_excluded == set()

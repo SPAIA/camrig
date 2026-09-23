@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from camrig import labels, trim
+from camrig.pts import FrameClock
 
 
 class InvertRangesTests(unittest.TestCase):
@@ -149,7 +150,8 @@ class RemapLabelsTests(unittest.TestCase):
             })
 
             frame_map = trim.build_frame_map([(3, 5)], 10)
-            kept, dropped = labels.remap_labels(video, fps, frame_map)
+            clock = FrameClock.constant(fps)
+            kept, dropped = labels.remap_labels(video, clock, clock, frame_map)
 
             self.assertEqual(len(kept), 1)
             self.assertEqual(kept[0]["source_track"], 1)
@@ -168,7 +170,8 @@ class RemapLabelsTests(unittest.TestCase):
             })
             frame_map = trim.build_frame_map([(3, 5)], 10)  # frames 6,7 -> 4,5
 
-            kept, _ = labels.remap_labels(video, fps, frame_map)
+            clock = FrameClock.constant(fps)
+            kept, _ = labels.remap_labels(video, clock, clock, frame_map)
 
             self.assertEqual(kept[0]["path"][0][2], round(4 / fps, 3))
             self.assertEqual(kept[0]["path"][1][2], round(5 / fps, 3))

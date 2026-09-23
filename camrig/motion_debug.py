@@ -34,6 +34,7 @@ import numpy as np
 from .config import Config, load_config
 from .motion import SCHEMA as MOTION_SCHEMA
 from .postprocess import motion_path
+from .pts import FrameClock, load_frame_times
 from .record import describe_commands
 
 log = logging.getLogger("camrig.motion_debug")
@@ -108,7 +109,7 @@ def _dominant_heading(ids: list[int], headings: dict[int, float | None]) -> floa
     return math.atan2(y, x) if n else None
 
 
-def burst_track_ids(motion: dict, tracks: list[dict], ids: list[int], framerate: float,
+def burst_track_ids(motion: dict, tracks: list[dict], ids: list[int], clock: FrameClock,
                     window_seconds: float, min_tracks: int, *,
                     max_direction_deviation: float = math.pi) -> set[int]:
     """Track indices (from ``ids``) whose start falls in a dense, directionally
@@ -138,7 +139,7 @@ def burst_track_ids(motion: dict, tracks: list[dict], ids: list[int], framerate:
     if min_tracks <= 0 or not ids:
         return set()
     windows = motion["windows"]
-    starts = sorted((windows[tracks[i]["w0"]]["f"] / framerate, i) for i in ids)
+    starts = sorted((clock.time(windows[tracks[i]["w0"]]["f"]), i) for i in ids)
     headings = {i: _track_heading(tracks[i]) for i in ids}
     flagged: set[int] = set()
     lo = 0
@@ -253,9 +254,14 @@ def render(
     # This clip's OWN captured framerate (camrig.motion --framerate), not
     # necessarily whatever [capture] currently says -- see camrig.motion's
     # module docstring. Falls back to cfg.capture.framerate for a sidecar
-    # written before that field existed.
+    # written before that field existed. Used only for the debug video's own
+    # output encoding rate below -- burst timing uses the real per-frame
+    # clock (see camrig.pts) instead.
     framerate = motion.get("framerate", cfg.capture.framerate)
     out_fps = fps or framerate
+    pts_path = video.with_suffix(".pts")
+    clock = (FrameClock.from_pts(load_frame_times(pts_path)) if pts_path.exists()
+             else FrameClock.constant(framerate))
     trail_seconds = trail_seconds if trail_seconds is not None else cfg.postprocess.trail_seconds
     window_frames = motion.get("params", {}).get("window", 6)
     trail_windows = max(round(trail_seconds * out_fps / window_frames), 1)
@@ -270,7 +276,7 @@ def render(
     # it's computed once here rather than inside _rebuild_trails.
     candidate_ids = [ti for ti, t in enumerate(tracks) if passes_thresholds(t, cfg.postprocess)]
     burst_ids = burst_track_ids(
-        motion, tracks, candidate_ids, framerate,
+        motion, tracks, candidate_ids, clock,
         cfg.postprocess.burst_window_seconds, cfg.postprocess.burst_min_tracks,
         max_direction_deviation=cfg.postprocess.burst_max_direction_deviation,
     )

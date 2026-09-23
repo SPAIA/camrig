@@ -32,6 +32,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .pts import FrameClock
+
 LABELS_SUFFIX = ".labels.jsonl"
 LABELS = ("insect", "other", "unsure")
 
@@ -62,7 +64,7 @@ def rewrite_labels(video: Path, records: list[dict]) -> None:
     path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
 
 
-def remap_labels(video: Path, framerate: float,
+def remap_labels(video: Path, old_clock: FrameClock, new_clock: FrameClock,
                  frame_map: list[int | None]) -> tuple[list[dict], list[dict]]:
     """Re-time every label after ``camrig.trim.apply_cuts`` shortens the clip.
 
@@ -74,6 +76,12 @@ def remap_labels(video: Path, framerate: float,
     it's dropped, since a track truncated by a cut isn't the ground truth it
     was labelled as.
 
+    ``old_clock``/``new_clock`` (see ``camrig.pts``) convert between time and
+    frame index on either side of the cut -- normally the clip's own real
+    ``.pts`` timestamps, read before and after ``apply_cuts`` rewrites that
+    sidecar (a constant-rate clock would misplace points whenever actual
+    capture timing drifted from nominal).
+
     Returns ``(kept, dropped)``, both re-timed/original records, so the
     caller can report what was lost. Rewrites the sidecar with ``kept``.
     """
@@ -82,12 +90,12 @@ def remap_labels(video: Path, framerate: float,
         new_path = []
         survives = True
         for x, y, t in record["path"]:
-            old_idx = round(t * framerate)
+            old_idx = old_clock.nearest_index(t)
             new_idx = frame_map[old_idx] if 0 <= old_idx < len(frame_map) else None
             if new_idx is None:
                 survives = False
                 break
-            new_path.append([x, y, round(new_idx / framerate, 3)])
+            new_path.append([x, y, round(new_clock.time(new_idx), 3)])
         if survives:
             kept.append({**record, "path": new_path, "t0": new_path[0][2], "t1": new_path[-1][2]})
         else:
