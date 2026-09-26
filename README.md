@@ -84,6 +84,10 @@ rpicam-raw pipeline with the Global Shutter backend — same profiles, sidecars,
 postprocess, and upload — and is distinguished by the `camera`/`sensor`
 fields in each clip's `.json` (`imx708`).
 
+Either camera can also be connected on its own, in either port: rpicam numbers
+cameras by detection order, not port, so `camrig` finds each one's `--camera`
+index by sensor name (`imx296` / `imx708`) from `rpicam-hello --list-cameras`.
+
 Since this sensor has no manual focus ring, `camrig` autofocuses it before
 every clip instead of relying on `camrig focus` peaking: a short discarded
 warm-up capture runs `--autofocus-mode auto`, and the real clip then pins

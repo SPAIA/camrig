@@ -35,8 +35,10 @@ version sensitive — verify against ``rpicam-vid --help`` on the target image.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
+import re
 import shlex
 import signal
 import subprocess
@@ -110,10 +112,51 @@ def clip_paths(day_dir: Path, profile: str, started_at: datetime) -> ClipPaths:
     )
 
 
+# Sensor each rpicam backend drives, and the index it has when both cameras
+# are plugged in (Global Shutter on CAM0, Camera Module 3 on CAM1).
+RPICAM_SENSORS = {"rpicam": "imx296", "rpicam-af": "imx708"}
+_RPICAM_DEFAULT_INDEX = {"rpicam": 0, "rpicam-af": 1}
+
+_LIST_CAMERAS_LINE = re.compile(r"^\s*(\d+)\s*:\s*(\w+)")
+
+
+@functools.cache
+def _list_rpicam_cameras() -> dict[str, int]:
+    """Map sensor name -> rpicam ``--camera`` index for the attached cameras.
+
+    Cached for the life of the process: CSI cameras can't be hot-plugged, so
+    the listing can't change underneath us. Empty if rpicam-hello is missing
+    or fails (e.g. under --dry-run on a dev machine).
+    """
+    try:
+        out = subprocess.run(
+            ["rpicam-hello", "--list-cameras"],
+            capture_output=True, text=True, timeout=15, check=False,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    cameras: dict[str, int] = {}
+    for line in out.splitlines():
+        m = _LIST_CAMERAS_LINE.match(line)
+        if m:
+            cameras.setdefault(m.group(2), int(m.group(1)))
+    return cameras
+
+
 def rpicam_camera_index(camera: str) -> str:
-    """The ``--camera`` index for an rpicam backend: CAM0 for the Global
-    Shutter, CAM1 for the Camera Module 3 (autofocus)."""
-    return "1" if camera == "rpicam-af" else "0"
+    """The ``--camera`` index for an rpicam backend.
+
+    rpicam numbers cameras in detection order, not by physical port, so a
+    Camera Module 3 alone on CAM1 is index 0. Look the backend's sensor up in
+    ``rpicam-hello --list-cameras``; fall back to the both-cameras-attached
+    layout if it isn't listed.
+    """
+    index = _list_rpicam_cameras().get(RPICAM_SENSORS[camera])
+    if index is None:
+        index = _RPICAM_DEFAULT_INDEX[camera]
+        log.warning("%s (%s) not found by rpicam-hello --list-cameras; using --camera %d",
+                    camera, RPICAM_SENSORS[camera], index)
+    return str(index)
 
 
 def _rpicam_af_args(cfg: CaptureConfig) -> list[str]:
@@ -426,9 +469,7 @@ def write_metadata(
         "started_at_utc": started_at.astimezone(timezone.utc).isoformat(),
         "capture": asdict(cfg),
         "camera": cfg.camera,
-        "sensor": {
-            "rpicam": "imx296", "rpicam-af": "imx708", "basler": "basler-ace2-mono",
-        }[cfg.camera],
+        "sensor": {**RPICAM_SENSORS, "basler": "basler-ace2-mono"}[cfg.camera],
     }
     if extra:
         meta.update(extra)

@@ -8,7 +8,18 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from camrig.config import BaslerConfig, CaptureConfig
+from camrig import record
 from camrig.record import ClipPaths, Recording, build_commands, clip_paths, resolve_auto_lock
+
+_BOTH_CAMERAS = {"imx296": 0, "imx708": 1}
+_real_list_cameras = record._list_rpicam_cameras.__wrapped__  # uncached, unpatched
+
+
+def setUpModule() -> None:
+    # Keep tests off the real rpicam-hello (and out of patched subprocess.run).
+    patcher = patch("camrig.record._list_rpicam_cameras", return_value=_BOTH_CAMERAS)
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
 
 
 def _family(root: Path) -> ClipPaths:
@@ -145,6 +156,26 @@ class RpicamAfTests(unittest.TestCase):
         [rpicam, _ffmpeg] = build_commands(cfg, paths, 1000)
         i = rpicam.index("--camera")
         self.assertEqual(rpicam[i + 1], "1")
+
+    def test_camera_index_follows_detection_order(self) -> None:
+        """Camera Module 3 alone (on either port) is rpicam index 0."""
+        cfg = CaptureConfig(camera="rpicam-af", profile="mjpeg", lens_position=5.0)
+        with patch("camrig.record._list_rpicam_cameras", return_value={"imx708": 0}):
+            [rpicam, _ffmpeg] = build_commands(cfg, _family(Path("/tmp")), 1000)
+        self.assertEqual(rpicam[rpicam.index("--camera") + 1], "0")
+
+    def test_list_cameras_parses_rpicam_hello(self) -> None:
+        out = (
+            "Available cameras\n-----------------\n"
+            "0 : imx708 [4608x2592 10-bit RGGB] (/base/axi/pcie@120000/rp1/i2c@88000/imx708@1a)\n"
+            "    Modes: 'SRGGB10_CSI2P' : 1536x864 [120.13 fps - (768, 432)/3072x1728 crop]\n"
+        )
+        with patch("camrig.record.subprocess.run", return_value=Mock(stdout=out)):
+            self.assertEqual(_real_list_cameras(), {"imx708": 0})
+
+    def test_list_cameras_empty_without_rpicam_hello(self) -> None:
+        with patch("camrig.record.subprocess.run", side_effect=FileNotFoundError):
+            self.assertEqual(_real_list_cameras(), {})
 
     def test_build_commands_pins_resolved_lens_position(self) -> None:
         cfg = CaptureConfig(camera="rpicam-af", profile="raw", lens_position=7.5)
