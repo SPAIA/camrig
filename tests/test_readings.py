@@ -113,6 +113,7 @@ def test_flush_sends_and_dequeues_on_201(tmp_path, server):
     headers, body = srv.requests[0]
     assert headers["Authorization"] == "Bearer secret"
     assert headers["Content-Type"] == "application/json"
+    assert headers["User-Agent"].startswith("camrig/")
     assert body["insectCount"] == 1
     assert readings.flush(cfg, tmp_path) == readings.EMPTY
 
@@ -128,7 +129,7 @@ def test_flush_moves_rejected_reading_aside(tmp_path, server):
     assert "HTTP 400" in (readings.failed_dir(tmp_path) / "clip.response.txt").read_text()
 
 
-@pytest.mark.parametrize("status", [500, 503])
+@pytest.mark.parametrize("status", [500, 503, 403, 429])
 def test_flush_keeps_reading_queued_on_server_error(tmp_path, server, status):
     cfg = _cfg(server(status).url)
     queued = _queue_one(tmp_path, cfg)

@@ -16,10 +16,10 @@ startTime never changes -- which is why the body is frozen to disk at
 enqueue time rather than rebuilt per attempt. Outcomes per response:
 
 * 2xx -- sent; queue file deleted.
-* 400/401/404 (any other 4xx) -- resending as-is can't help; the file moves
-  to ``.readings/failed/`` with the server's response alongside it, for a
-  human to look at.
-* 5xx / network error -- left queued; ``flush`` stops there (the server or
+* 400/401/404 (any 4xx not listed below) -- resending as-is can't help; the
+  file moves to ``.readings/failed/`` with the server's response alongside
+  it, for a human to look at.
+* 5xx / network error / 403 / 408 / 429 -- left queued; ``flush`` stops there (the server or
   link is down, the rest would fail too) and the caller backs off.
 """
 
@@ -44,6 +44,11 @@ log = logging.getLogger("camrig.readings")
 QUEUE_DIR = ".readings"
 TMP_SUFFIX = ".tmp"
 REQUEST_TIMEOUT_SECONDS = 30
+# 4xx that say nothing about the payload, so they're retried rather than
+# failed: 403 is what Cloudflare's edge returns when it blocks a request
+# (e.g. "error code: 1010" for a blocklisted User-Agent) before it reaches
+# the API, plus request timeout and rate limiting.
+RETRYABLE_4XX = {403, 408, 429}
 
 # flush() outcomes
 SENT, RETRY, EMPTY = "sent", "retry", "empty"
@@ -155,14 +160,19 @@ def enqueue(cfg: Config, base: Path, video: Path) -> bool:
 
 
 def _post(cfg: Config, body: bytes) -> tuple[int | None, str]:
-    """POST one reading. Returns (HTTP status, response text); status None =
-    network error (text is the error).
+    """POST one reading. Sends an explicit User-Agent: Cloudflare blocks
+    urllib's default ``Python-urllib/3.x`` with a 403 before the API sees it.
+    Returns (HTTP status, response text); status None = network error (text
+    is the error).
     """
+    from . import __version__
+
     req = urllib.request.Request(
         cfg.readings.url, data=body, method="POST",
         headers={
             "Authorization": f"Bearer {cfg.readings.token}",
             "Content-Type": "application/json",
+            "User-Agent": f"camrig/{__version__}",
         },
     )
     try:
@@ -189,7 +199,7 @@ def flush(cfg: Config, base: Path) -> str:
         if status is not None and 200 <= status < 300:
             log.info("Sent reading %s (%s)", path.stem, text.strip())
             path.unlink(missing_ok=True)
-        elif status is not None and 400 <= status < 500:
+        elif status is not None and 400 <= status < 500 and status not in RETRYABLE_4XX:
             log.error("Server rejected reading %s (HTTP %s): %s; moved to %s",
                       path.stem, status, text.strip(), failed_dir(base))
             failed = failed_dir(base)
