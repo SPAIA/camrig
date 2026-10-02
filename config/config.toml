@@ -249,3 +249,20 @@ worker_ws_url = "wss://your-worker.example.workers.dev/device"
 device_id = "pi-rig-01"
 # File holding the device bearer token (kept out of config; 0600, root-only).
 device_token_file = "/etc/camrig/device_token"
+
+[readings]
+# After postprocess, POST each clip's insect count (tracks surviving every
+# [postprocess] filter) plus those trails to the SPAIA server as one reading
+# (camrig/readings.py). Queued under <recordings>/.readings/pending while
+# offline and retried with backoff; readings the server rejects (4xx) move to
+# .readings/failed with the response next to them.
+enabled = true
+url = "https://app.spaia.earth/api/device/readings"
+token = "naturlabor"
+# Server-side ID of the spot this rig is mounted at.
+spot_id = 22
+# Empty = use [cloud] device_id.
+device_id = ""
+# Backoff while the server/network is down: starts here, doubles per failure.
+retry_min_seconds = 60
+retry_max_seconds = 3600

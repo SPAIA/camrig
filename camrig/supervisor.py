@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from .config import Config
-from . import led, postprocess, record, storage, upload
+from . import led, postprocess, readings, record, storage, upload
 
 log = logging.getLogger("camrig.supervisor")
 
@@ -55,6 +55,8 @@ class Supervisor:
         # Serialises post-capture chains (sidecars -> upload -> prune); the
         # niced subprocesses never contend with a capture for the CPU.
         self._post_lock = asyncio.Lock()
+        # Poked after a reading is queued so the sender wakes immediately.
+        self._readings_wake = asyncio.Event()
         self._active: SessionState | None = None
         self._recording: record.Recording | None = None
         self._manual_active = False
@@ -181,7 +183,8 @@ class Supervisor:
             "rc": rc,
         })
 
-        if rc == 0 and (self.cfg.postprocess.enabled or self.cfg.upload.enabled):
+        if rc == 0 and (self.cfg.postprocess.enabled or self.cfg.upload.enabled
+                        or self.cfg.readings.enabled):
             asyncio.create_task(self._finish_clip(paths.video))
 
     async def _finish_clip(self, video) -> None:
@@ -203,6 +206,13 @@ class Supervisor:
                     log.exception("Postprocess crashed for %s", video.name)
                     processed = False
 
+            if self.cfg.readings.enabled and processed and video.suffix == ".mkv":
+                try:
+                    if await asyncio.to_thread(readings.enqueue, self.cfg, self.base, video):
+                        self._readings_wake.set()
+                except Exception:
+                    log.exception("Building reading crashed for %s", video.name)
+
             if not (self.cfg.upload.enabled and self.cfg.upload.immediate):
                 return
             try:
@@ -220,6 +230,33 @@ class Supervisor:
                     await asyncio.to_thread(storage.prune, self.cfg, self.base)
             except Exception:
                 log.exception("Immediate upload crashed for %s", video.name)
+
+    async def _readings_loop(self) -> None:
+        """Send queued readings: right after one is queued, and on an
+        exponential backoff while the server/network is down. Also drains
+        whatever an earlier run (or an offline day) left queued at startup.
+        """
+        rc = self.cfg.readings
+        backoff = rc.retry_min_seconds
+        while True:
+            # Cleared before flushing, so a reading queued mid-flush still
+            # wakes the next pass.
+            self._readings_wake.clear()
+            try:
+                result = await asyncio.to_thread(readings.flush, self.cfg, self.base)
+            except Exception:
+                log.exception("Sending readings crashed")
+                result = readings.RETRY
+            if result == readings.RETRY:
+                delay = backoff
+                backoff = min(backoff * 2, rc.retry_max_seconds)
+            else:
+                delay = None
+                backoff = rc.retry_min_seconds
+            try:
+                await asyncio.wait_for(self._readings_wake.wait(), timeout=delay)
+            except asyncio.TimeoutError:
+                pass
 
     # ----- manual (triggered) sessions ---------------------------------
 
@@ -334,6 +371,8 @@ class Supervisor:
                 interval_seconds=self.cfg.led.heartbeat_interval_seconds,
                 pulse_ms=self.cfg.led.heartbeat_pulse_ms,
             )))
+        if self.cfg.readings.enabled:
+            tasks.append(asyncio.create_task(self._readings_loop()))
         if cloudlink is not None:
             tasks.append(asyncio.create_task(cloudlink.run()))
         log.info("Supervisor running (storage=%s)", self.base)

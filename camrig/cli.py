@@ -6,13 +6,16 @@ Subcommands:
   postprocess Generate preview + motion sidecars (one clip, or all pending).
   trim        Cut sections out of a clip in place (lossless) to save space/time.
   debug-motion Render motion tracks/blobs onto a clip for visual QA (on-demand).
+  debug-labels Render only human-labelled trails (e.g. insects) onto a video.
   bucket-postprocess   Postprocess a clip that lives only in the R2 bucket.
   bucket-debug-motion  Render a debug preview for a clip that lives only in the R2 bucket.
   motion-view Serve an interactive motion-track viewer for a clip (reach it over Tailscale).
   label-score Score current [postprocess] thresholds against a clip's labels.jsonl.
   optimise-filters  Search [postprocess] filter thresholds against labelled clips.
   upload      Flush pending clips to R2 now and prune (manual catch-up).
+  readings    Queue clips' insect-count readings and send the queue to SPAIA.
   focus       Serve a live focus-assist page (manual lens; reach it over Tailscale).
+  live        Serve a live view with motion trails drawn in real time (rpicam backends).
   captive-portal  AP + captive-portal focus fallback (no internet after boot).
   boot        Boot tasks: NTP sync + catch-up upload + prune.
   shutdown    Upload today, set RTC wake alarm, power off.
@@ -153,6 +156,12 @@ def _cmd_debug_motion(args, cfg) -> int:
     return 0 if ok else 1
 
 
+def _cmd_debug_labels(args, cfg) -> int:
+    from . import label_debug
+
+    return 0 if label_debug.run_from_args(args) else 1
+
+
 def _cmd_bucket_postprocess(args, cfg) -> int:
     import tempfile
     from pathlib import Path
@@ -264,6 +273,20 @@ def _cmd_upload(args, cfg) -> int:
     return 0 if ok else 1
 
 
+def _cmd_readings(args, cfg) -> int:
+    import json
+    from pathlib import Path
+    from . import readings
+
+    if args.dry_run:
+        for clip in args.clips:
+            print(json.dumps(readings.build_reading(cfg, Path(clip)), indent=2))
+        return 0
+    base = storage.select_base_dir(cfg)
+    ok = all([readings.enqueue(cfg, base, Path(clip)) for clip in args.clips])
+    return 0 if readings.flush(cfg, base) != readings.RETRY and ok else 1
+
+
 def _cmd_focus(args, cfg) -> int:
     from pathlib import Path
 
@@ -286,6 +309,27 @@ def _cmd_focus(args, cfg) -> int:
         focus_cfg, basler=cfg.basler, full_cfg=cfg,
         dry_run=args.dry_run, config_path=config_path,
     )
+
+
+def _cmd_live(args, cfg) -> int:
+    from .live import LiveConfig, run
+
+    live_cfg = LiveConfig.from_config(
+        cfg,
+        camera=args.camera,
+        width=args.width,
+        framerate=args.framerate,
+        view_fps=args.view_fps,
+        quality=args.quality,
+        port=args.port,
+        shutter_us=args.shutter,
+        gain=args.gain,
+        lens_position=args.lens_position,
+        chronic_seconds=args.chronic_seconds,
+        trail_seconds=args.trail_seconds,
+        timeout_minutes=args.timeout_minutes,
+    )
+    return run(live_cfg, cfg.postprocess, dry_run=args.dry_run)
 
 
 def _cmd_captive(args, cfg) -> int:
@@ -370,6 +414,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true", help="print the ffmpeg commands, do not run")
     p.set_defaults(func=_cmd_debug_motion)
 
+    from . import label_debug
+    p = sub.add_parser("debug-labels",
+                       help="render only human-labelled trails (e.g. insects) onto a video")
+    label_debug.add_arguments(p)
+    p.set_defaults(func=_cmd_debug_labels)
+
     p = sub.add_parser("bucket-postprocess",
                        help="postprocess a clip that lives only in the R2 bucket")
     p.add_argument("day", help="clip's day directory, e.g. 2026-09-01")
@@ -426,6 +476,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true", help="print the commands, do not run")
     p.set_defaults(func=_cmd_upload)
 
+    p = sub.add_parser("readings",
+                       help="queue clips' insect-count readings and send the queue to SPAIA")
+    p.add_argument("clips", nargs="*",
+                   help="postprocessed .mkv clips to (re)queue first (default: just send the queue)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print each clip's reading body, do not queue or send")
+    p.set_defaults(func=_cmd_readings)
+
     p = sub.add_parser("focus", help="serve a live focus-assist page")
     p.add_argument("--camera", choices=["rpicam", "rpicam-af", "basler"],
                    help="camera backend (default: capture.camera in config)")
@@ -443,6 +501,35 @@ def main(argv: list[str] | None = None) -> int:
                         "0 = never (default 10)")
     p.add_argument("--dry-run", action="store_true", help="print the command, do not run")
     p.set_defaults(func=_cmd_focus)
+
+    p = sub.add_parser("live", help="serve a live view with real-time motion trails")
+    p.add_argument("--camera", choices=["rpicam-af", "rpicam"], default="rpicam-af",
+                   help="camera backend (default rpicam-af)")
+    p.add_argument("--port", type=int, default=8080, help="HTTP port (default 8080)")
+    p.add_argument("--width", type=int,
+                   help="stream width, rounded to a multiple of 128; height follows the "
+                        "sensor aspect (default 768)")
+    p.add_argument("--framerate", type=int,
+                   help="camera/motion fps (default: capture.framerate, which the motion "
+                        "window and link distances are tuned for)")
+    p.add_argument("--view-fps", type=int, dest="view_fps",
+                   help="fps of the JPEG view sent to the browser (default 15)")
+    p.add_argument("--quality", type=int, help="MJPEG quality (default 80)")
+    p.add_argument("--shutter", type=int, dest="shutter",
+                   help="shutter (us), 0 = auto (default: capture.shutter_us)")
+    p.add_argument("--gain", type=float, help="analogue gain, 0 = auto (default: capture.gain)")
+    p.add_argument("--lens-position", type=float, dest="lens_position",
+                   help="rpicam-af lens position in dioptres, 0 = autofocus once at start "
+                        "(default: capture.lens_position)")
+    p.add_argument("--chronic-seconds", type=float, dest="chronic_seconds",
+                   help="horizon of the running chronic estimate (default 60)")
+    p.add_argument("--trail-seconds", type=float, dest="trail_seconds",
+                   help="how long trails stay visible (default: [postprocess] trail_seconds)")
+    p.add_argument("--timeout-minutes", type=int, dest="timeout_minutes",
+                   help="stop (and release the camera) after this many minutes with no "
+                        "page open, 0 = never (default 10)")
+    p.add_argument("--dry-run", action="store_true", help="print the pipeline, do not run")
+    p.set_defaults(func=_cmd_live)
 
     p = sub.add_parser("captive-portal",
                        help="AP + captive-portal focus fallback (no internet after boot)")

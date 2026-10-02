@@ -175,6 +175,10 @@ class FrameBuffer:
             self._closed = True
             self._cond.notify_all()
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     def wait_newer(self, last_seq: int, timeout: float = 5.0) -> tuple[int, bytes | None]:
         """Block until a frame newer than ``last_seq`` (or timeout/close)."""
         with self._cond:
@@ -193,7 +197,7 @@ def _split_mjpeg(stdout, buffer: FrameBuffer) -> None:
     buf = bytearray()
     try:
         while True:
-            chunk = stdout.read(65536)
+            chunk = stdout.read1(65536)  # whatever has arrived; read() would wait for 64 KiB
             if not chunk:
                 break
             buf += chunk

@@ -229,6 +229,22 @@ class CloudConfig:
 
 
 @dataclass
+class ReadingsConfig:
+    # POST each clip's filtered insect count + trails to the SPAIA server
+    # after postprocess (see camrig.readings). Queued on disk while offline.
+    enabled: bool = False
+    url: str = "https://app.spaia.earth/api/device/readings"
+    token: str = ""
+    # Spot the rig is mounted at (server-side spot ID).
+    spot_id: int = 22
+    # Empty = use cloud.device_id.
+    device_id: str = ""
+    # Retry backoff while the server/network is down (seconds, doubling).
+    retry_min_seconds: int = 60
+    retry_max_seconds: int = 3600
+
+
+@dataclass
 class CaptiveConfig:
     # Fallback Wi-Fi AP + captive-portal focus page, started by cam-boot.service
     # when there's no internet after boot (fresh deployment, wrong Wi-Fi creds,
@@ -258,6 +274,7 @@ class Config:
     startup: StartupConfig = field(default_factory=StartupConfig)
     cloud: CloudConfig = field(default_factory=CloudConfig)
     captive: CaptiveConfig = field(default_factory=CaptiveConfig)
+    readings: ReadingsConfig = field(default_factory=ReadingsConfig)
 
     def device_token(self) -> str | None:
         """Read the device bearer token, or None if the file is absent."""

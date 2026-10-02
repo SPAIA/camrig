@@ -168,5 +168,11 @@ def process_pending(
         if time.time() - clip.stat().st_mtime < SETTLE_SECONDS:
             log.info("Skipping %s: written too recently (may be recording)", clip.name)
             continue
-        ok = process_clip(cfg, clip, force=force, dry_run=dry_run) and ok
+        processed = process_clip(cfg, clip, force=force, dry_run=dry_run)
+        # Catch-up clips (missed by the supervisor's post-capture chain) still
+        # get a reading; the supervisor's sender ships it on its next pass.
+        if processed and cfg.readings.enabled and not dry_run:
+            from . import readings
+            readings.enqueue(cfg, base, clip)
+        ok = processed and ok
     return ok
